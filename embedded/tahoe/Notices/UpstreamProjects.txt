@@ -1,0 +1,17 @@
+SideInstaller by FrizzleM
+Official project: https://github.com/FrizzleM/SideInstaller
+Pinned source/version: Installer.lock.json. The original licence and copyright
+are retained in LICENSES/SideInstaller-License.md and packaged source notices.
+SideOS provides desktop integration, its Home dashboard and host-owned picker.
+
+LiveContainer by the LiveContainer contributors
+Official project: https://github.com/LiveContainer/LiveContainer
+Pinned source: Engine.lock.json. AGPL-3.0 and upstream notices remain applicable.
+
+StikJIT by the StikDebug contributors
+Official project: https://github.com/StikDebug/StikJIT
+Pinned source: Engine.lock.json. MPL-2.0 and upstream notices remain applicable.
+
+All existing component, artwork and UI-reference notices are retained.
+Original authors retain their copyrights; SideOS integration does not replace
+their authorship. See CREDITS.md and LICENSING.md in the corresponding source.

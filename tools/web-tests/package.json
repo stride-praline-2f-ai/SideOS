@@ -1,0 +1,7 @@
+{
+  "name": "sideos-web-tests",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Headless DOM checks for the ChatGPT page adapter",
+  "devDependencies": { "jsdom": "26.1.0" }
+}

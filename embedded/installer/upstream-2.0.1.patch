@@ -1,0 +1,1580 @@
+diff --git a/ios-app/AppRefreshService.swift b/ios-app/AppRefreshService.swift
+new file mode 100644
+index 0000000..234c7a3
+--- /dev/null
++++ b/ios-app/AppRefreshService.swift
+@@ -0,0 +1,156 @@
++import Foundation
++
++/// Shared by the apps page and Shortcuts. Pending jobs are apps left untouched
++/// when cancellation is requested between installs.
++struct RefreshAllResult: Sendable {
++    let jobs: [RefreshJob]
++    let cancelled: Bool
++
++    var total: Int { jobs.count }
++    var refreshed: Int { jobs.filter { $0.state == .done }.count }
++    var failed: Int {
++        jobs.filter { if case .failed = $0.state { return true }; return false }.count
++    }
++    var skipped: Int { jobs.filter { $0.state == .pending }.count }
++    var errors: [String] {
++        jobs.compactMap {
++            guard case .failed(let error) = $0.state else { return nil }
++            return "\($0.name): \(error)"
++        }
++    }
++
++    var dialog: String {
++        guard total > 0 else {
++            return L("No refreshable apps found. Keep the original IPAs in SideInstaller’s IPA library.")
++        }
++        var message = L("Refreshed %d of %d apps.", refreshed, total)
++        if failed > 0 { message += " " + L("%d failed.", failed) }
++        if skipped > 0 { message += " " + L("%d left unchanged.", skipped) }
++        if cancelled { message += " " + L("Refresh cancelled.") }
++        if !errors.isEmpty { message += "\n" + errors.joined(separator: "\n") }
++        return message
++    }
++}
++
++/// Owns refresh execution for every caller, without requiring a view to load.
++/// Its reservation covers discovery, sign-in and every install, including
++/// awaits, so a second refresh or the normal install cannot start in between.
++@MainActor
++final class AppRefreshService {
++    static let shared = AppRefreshService()
++    private(set) var isRefreshing = false
++    private init() {}
++
++    typealias Update = @MainActor ([RefreshJob], String) -> Void
++
++    struct Inventory {
++        let entries: [SideloadedAppStatus]
++        let unmatched: [ProvisioningProfile]
++        let jobs: [RefreshJob]
++    }
++
++    static func inventory(using engine: Engine) async throws -> Inventory {
++        let inventory = try await engine.sideloadedAppInventory()
++        try Task.checkCancellation()
++        let apps = inventory.apps.compactMap(SideloadedApp.init(plist:))
++        let profiles = inventory.profiles.compactMap(ProvisioningProfile.init(data:))
++        let matched = ProfileMatcher.match(apps: apps, profiles: profiles)
++        let jobs = await refreshJobs(for: matched.entries)
++        try Task.checkCancellation()
++        engine.log("Sideloaded apps: \(apps.count) sideloaded, \(profiles.count) profile(s) decoded.")
++        engine.log("Sideloaded apps: \(jobs.count) of \(matched.entries.count) can be refreshed from an IPA on disk.")
++        return Inventory(entries: matched.entries, unmatched: matched.unmatched, jobs: jobs)
++    }
++
++    func withExclusiveOperation<T>(_ operation: @MainActor () async throws -> T) async throws -> T {
++        let engine = Engine.shared
++        guard !isRefreshing, !engine.isRunning else {
++            throw EngineError.message(L("An install or refresh is already running. Wait for it to finish, then refresh."))
++        }
++        isRefreshing = true
++        defer { isRefreshing = false }
++        #if SIDEINSTALLER_EMBEDDED
++        let lease = try EmbeddedRefreshLease()
++        defer { withExtendedLifetime(lease) {} }
++        #endif
++        return try await operation()
++    }
++
++    func refreshAll(update: Update = { _, _ in }) async throws -> RefreshAllResult {
++        try await withExclusiveOperation { try await performRefreshAll(update: update) }
++    }
++
++    private func performRefreshAll(update: Update) async throws -> RefreshAllResult {
++        let engine = Engine.shared
++        try Task.checkCancellation()
++        update([], L("Getting ready"))
++
++        // Always discover afresh, even when this launch has never opened AppsView.
++        var jobs = try await Self.inventory(using: engine).jobs
++        update(jobs, L("Getting ready"))
++        guard !jobs.isEmpty else { return RefreshAllResult(jobs: [], cancelled: false) }
++        engine.log("=== Refresh all: \(jobs.count) app(s) ===")
++        try Task.checkCancellation()
++        try await engine.prepareRefresh()
++
++        for index in jobs.indices {
++            // The engine's signing/install operations finish at a safe point.
++            if Task.isCancelled { break }
++            let job = jobs[index]
++            if let team = engine.signingTeamID, let installed = job.teamID, installed != team {
++                jobs[index].state = .failed(
++                    L("Signed by team %@, not the one you're signed in as — refreshing it here would install a second copy.", installed))
++                update(jobs, L("Getting ready"))
++                continue
++            }
++            jobs[index].state = .working
++            update(jobs, L("Refreshing %@", job.name))
++            do {
++                try await engine.refreshInstalledApp(named: job.name, ipaPath: job.ipa.path)
++                jobs[index].state = .done
++            } catch {
++                let message = Self.text(for: error)
++                jobs[index].state = .failed(message)
++                engine.log("⛔️ Refresh \(job.name): \(message)")
++            }
++            update(jobs, L("Getting ready"))
++        }
++        let result = RefreshAllResult(jobs: jobs, cancelled: Task.isCancelled)
++        engine.log("Refresh all finished: \(result.refreshed)/\(result.total) refreshed.")
++        return result
++    }
++
++    static func text(for error: Error) -> String {
++        (error as? LocalizedError)?.errorDescription ?? String(describing: error)
++    }
++
++    private struct InstalledRef: Sendable {
++        let bundleID: String
++        let name: String
++        let teamID: String?
++    }
++
++    private static func refreshJobs(for entries: [SideloadedAppStatus]) async -> [RefreshJob] {
++        let installed = entries.map {
++            InstalledRef(bundleID: $0.app.bundleID, name: $0.app.name,
++                         teamID: $0.current?.teamIdentifier)
++        }
++        return await Task.detached(priority: .userInitiated) {
++            pair(installed, with: IPALibrary.installable())
++        }.value
++    }
++
++    private nonisolated static func pair(
++        _ installed: [InstalledRef],
++        with library: [(entry: IPALibrary.Entry, info: IPALibrary.AppInfo)]
++    ) -> [RefreshJob] {
++        installed.compactMap { app in
++            guard let match = library.first(where: {
++                ProfileMatcher.installed(app.bundleID, isBuiltFrom: $0.info.bundleID,
++                                         teamID: app.teamID)
++            }) else { return nil }
++            return RefreshJob(bundleID: app.bundleID, name: app.name,
++                              ipa: match.entry.url, teamID: app.teamID)
++        }
++    }
++}
+diff --git a/ios-app/AppShortcuts.swift b/ios-app/AppShortcuts.swift
+new file mode 100644
+index 0000000..3f013b1
+--- /dev/null
++++ b/ios-app/AppShortcuts.swift
+@@ -0,0 +1,16 @@
++import AppIntents
++
++struct SideInstallerShortcuts: AppShortcutsProvider {
++    static var appShortcuts: [AppShortcut] {
++        AppShortcut(
++            intent: RefreshAllAppsIntent(),
++            phrases: [
++                "Refresh \(.applicationName)",
++                "Refresh \(.applicationName) apps",
++                "Refresh my \(.applicationName) apps",
++                "Refresh apps with \(.applicationName)",
++            ],
++            shortTitle: "Refresh All Apps",
++            systemImageName: "arrow.triangle.2.circlepath")
++    }
++}
+diff --git a/ios-app/AppsView.swift b/ios-app/AppsView.swift
+index 082bcf0..e2f1512 100644
+--- a/ios-app/AppsView.swift
++++ b/ios-app/AppsView.swift
+@@ -311,9 +311,9 @@ enum ProfileMatcher {
+
+ /// One app a refresh will act on: what is installed, and the IPA on disk it
+ /// will be signed again from.
+-struct RefreshJob: Identifiable, Equatable {
++struct RefreshJob: Identifiable, Equatable, Sendable {
+
+-    enum State: Equatable {
++    enum State: Equatable, Sendable {
+         case pending, working, done
+         case failed(String)
+     }
+@@ -393,22 +393,19 @@ final class SideloadedAppsManager: ObservableObject {
+
+     /// Ask the device what it has. `quiet` logs failures instead of showing them.
+     func load(quiet: Bool = false) {
+-        guard !isWorking, !isRefreshing else { return }
++        guard !isWorking, !isRefreshing, !AppRefreshService.shared.isRefreshing else { return }
+         isWorking = true
+         lastError = nil
+         if !quiet { engine.log("=== Sideloaded apps: reading the device ===") }
+         Task {
+             do {
+-                let inventory = try await engine.sideloadedAppInventory()
+-                let apps = inventory.apps.compactMap(SideloadedApp.init(plist:))
+-                let profiles = inventory.profiles.compactMap(ProvisioningProfile.init(data:))
+-                let matched = ProfileMatcher.match(apps: apps, profiles: profiles)
+-                entries = matched.entries
+-                unmatched = matched.unmatched
+-                await rebuildRefreshable()
++                let inventory = try await AppRefreshService.inventory(using: engine)
++                entries = inventory.entries
++                unmatched = inventory.unmatched
++                refreshable = inventory.jobs
++                unrefreshable = max(0, entries.count - refreshable.count)
+                 hasLoaded = true
+                 lastRefreshed = Date()
+-                engine.log("Sideloaded apps: \(apps.count) sideloaded, \(profiles.count) profile(s) decoded.")
+             } catch {
+                 let message = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+                 if quiet {
+@@ -445,49 +442,26 @@ final class SideloadedAppsManager: ObservableObject {
+                 refreshStatus = nil
+                 refreshTask = nil
+             }
++            let result: RefreshAllResult
+             do {
+-                try await engine.prepareRefresh()
++                result = try await AppRefreshService.shared.refreshAll { [weak self] jobs, status in
++                    self?.jobs = jobs
++                    self?.refreshStatus = status
++                }
+             } catch {
+-                let message = Self.text(for: error)
++                let message = AppRefreshService.text(for: error)
+                 lastError = message
+                 engine.log("⛔️ Refresh all: \(message)")
+                 jobs = []
+                 return
+             }
+
+-            var refreshed = 0
+-            for index in jobs.indices {
+-                // Cancellation is checked between apps; signing and installing
+-                // can't be interrupted midway.
+-                if Task.isCancelled { break }
+-                let job = jobs[index]
+-                // Skip apps signed by a different team: the new bundle ID would
+-                // install a second copy instead of replacing the app.
+-                if let team = engine.signingTeamID, let installed = job.teamID, installed != team {
+-                    jobs[index].state = .failed(
+-                        L("Signed by team %@, not the one you're signed in as — refreshing it here would install a second copy.", installed))
+-                    continue
+-                }
+-                jobs[index].state = .working
+-                refreshStatus = L("Refreshing %@", job.name)
+-                do {
+-                    try await engine.refreshInstalledApp(named: job.name, ipaPath: job.ipa.path)
+-                    jobs[index].state = .done
+-                    refreshed += 1
+-                } catch {
+-                    let message = Self.text(for: error)
+-                    jobs[index].state = .failed(message)
+-                    engine.log("⛔️ Refresh \(job.name): \(message)")
+-                }
+-            }
+-
+-            refreshSummary = jobs.count == 1
+-                ? (refreshed == 1 ? L("Refreshed. Its seven days start again now.")
+-                                  : L("Nothing was refreshed."))
+-                : L("Refreshed %d of %d apps.", refreshed, jobs.count)
+-            engine.log("Refresh all finished: \(refreshed)/\(jobs.count) refreshed.")
++            refreshSummary = result.total == 1
++                ? (result.refreshed == 1 ? L("Refreshed. Its seven days start again now.")
++                                         : L("Nothing was refreshed."))
++                : L("Refreshed %d of %d apps.", result.refreshed, result.total)
+             // Read the device again, so the days on screen are the new ones.
+-            if refreshed > 0 {
++            if result.refreshed > 0 {
+                 isRefreshing = false        // `load` won't run while a refresh holds the link
+                 load(quiet: true)
+             }
+@@ -502,50 +476,6 @@ final class SideloadedAppsManager: ObservableObject {
+         refreshStatus = L("Stopping after this app")
+         engine.log("Refresh all: stopping after the current app.")
+     }
+-
+-    /// A thrown error as the page should print it.
+-    private static func text(for error: Error) -> String {
+-        (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+-    }
+-
+-    /// Finds which listed apps have a matching IPA in Documents. The IPAs are
+-    /// read off the main thread.
+-    private func rebuildRefreshable() async {
+-        let installed = entries.map {
+-            InstalledRef(bundleID: $0.app.bundleID, name: $0.app.name,
+-                         teamID: $0.current?.teamIdentifier)
+-        }
+-        let matched = await Task.detached(priority: .userInitiated) {
+-            SideloadedAppsManager.pair(installed, with: IPALibrary.installable())
+-        }.value
+-        refreshable = matched
+-        unrefreshable = max(0, entries.count - matched.count)
+-        engine.log("Sideloaded apps: \(matched.count) of \(entries.count) can be refreshed from an IPA on disk.")
+-    }
+-
+-    /// A page entry cut down to what the matching needs, so that work can be
+-    /// handed off the main actor.
+-    private struct InstalledRef: Sendable {
+-        let bundleID: String
+-        let name: String
+-        let teamID: String?
+-    }
+-
+-    /// One job per installed app that an IPA on disk would reinstall, in the
+-    /// page's own order.
+-    private nonisolated static func pair(
+-        _ installed: [InstalledRef],
+-        with library: [(entry: IPALibrary.Entry, info: IPALibrary.AppInfo)]
+-    ) -> [RefreshJob] {
+-        installed.compactMap { app in
+-            guard let match = library.first(where: {
+-                ProfileMatcher.installed(app.bundleID, isBuiltFrom: $0.info.bundleID,
+-                                         teamID: app.teamID)
+-            }) else { return nil }
+-            return RefreshJob(bundleID: app.bundleID, name: app.name,
+-                              ipa: match.entry.url, teamID: app.teamID)
+-        }
+-    }
+ }
+
+ // MARK: - View
+diff --git a/ios-app/DeepLink.swift b/ios-app/DeepLink.swift
+index 556a06d..8167ed3 100644
+--- a/ios-app/DeepLink.swift
++++ b/ios-app/DeepLink.swift
+@@ -16,7 +16,11 @@ enum DeepLink: Hashable {
+     case certificate(LinkedCertificate)
+
+     /// The scheme registered in Info.plist.
++    #if SIDEINSTALLER_EMBEDDED
++    static let scheme = "sideinstaller-embedded"
++    #else
+     static let scheme = "sideinstaller"
++    #endif
+
+     /// What a `sideinstaller://` URL asks for.
+     enum Parsed {
+diff --git a/ios-app/EmbeddedJITPairing.swift b/ios-app/EmbeddedJITPairing.swift
+new file mode 100644
+index 0000000..9faea07
+--- /dev/null
++++ b/ios-app/EmbeddedJITPairing.swift
+@@ -0,0 +1,28 @@
++#if SIDEINSTALLER_EMBEDDED
++import Foundation
++
++@MainActor
++enum EmbeddedJITPairing {
++    /// Uses the bootstrap's captured real app-group path, not a guest home or
++    /// newly-created preference suite (both are redirected by LC guest hooks).
++    static func sendCurrent(activate: Bool = false) throws {
++        guard let destination = SIEmbeddedJITPairingURL() else {
++            throw NSError(domain: "SideInstaller.JITPairing", code: 2, userInfo: [NSLocalizedDescriptionKey:
++                "LiveContainer’s pairing handoff is unavailable. Reopen the updated combined app."])
++        }
++        let data = try Data(contentsOf: PrivateStore.pairingFile)
++        try JITPairingStore.save(data, to: destination)
++        if activate && !SIEmbeddedUseJITPairing() {
++            throw NSError(domain: "SideInstaller.JITPairing", code: 3, userInfo: [NSLocalizedDescriptionKey:
++                "Pairing was saved. In LiveContainer’s Built-in JIT setup, tap Use built-in SideInstaller pairing."])
++        }
++    }
++
++    /// A handoff failure must never turn a successful pair/install into failure.
++    static func syncIfAvailable() -> String? {
++        guard FileManager.default.fileExists(atPath: PrivateStore.pairingFile.path) else { return nil }
++        do { try sendCurrent(); return nil }
++        catch { return "LiveContainer JIT pairing was not synced: " + error.localizedDescription }
++    }
++}
++#endif
+diff --git a/ios-app/EmbeddedLiveContainer.swift b/ios-app/EmbeddedLiveContainer.swift
+new file mode 100644
+index 0000000..12dca1e
+--- /dev/null
++++ b/ios-app/EmbeddedLiveContainer.swift
+@@ -0,0 +1,265 @@
++#if SIDEINSTALLER_EMBEDDED
++import Foundation
++import Security
++import SwiftUI
++import Darwin
++import UniformTypeIdentifiers
++
++struct EmbeddedCertificateHandoff {
++    let report: String
++    let activationIssue: String?
++}
++
++struct EmbeddedSigningCheck {
++    let needsRepair: Bool
++    let message: String
++}
++
++/// UI and LiveProcess have different Engine singletons. An OS-held lock also
++/// excludes the other process and is automatically released if either dies.
++final class EmbeddedRefreshLease {
++    private var descriptor: Int32 = -1
++
++    init() throws {
++        let directory = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Caches")
++        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
++        descriptor = open(directory.appendingPathComponent("SideInstaller-operation.lock").path,
++                          O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
++        guard descriptor >= 0 else { throw EngineError.message("Unable to reserve the embedded signing operation.") }
++        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
++            let failedDescriptor = descriptor
++            descriptor = -1
++            close(failedDescriptor)
++            throw EngineError.message("SideInstaller is already installing or refreshing in another process.")
++        }
++    }
++
++    deinit {
++        guard descriptor >= 0 else { return }
++        flock(descriptor, LOCK_UN)
++        close(descriptor)
++    }
++}
++
++/// ObjC entry point called by LiveContainer's existing LiveProcess transport.
++/// The transport does not sign or install anything: this delegates to the same
++/// service used by SideInstaller's apps page and standalone App Intent.
++@MainActor
++@objc(SIEmbeddedBridge)
++final class SIEmbeddedBridge: NSObject {
++    private static var refreshTask: Task<Void, Never>?
++
++    @objc(refreshAllWithProgress:completion:)
++    static func refreshAll(progress: @escaping (Double) -> Void,
++                           completion: @escaping (String?, String?) -> Void) {
++        guard refreshTask == nil else {
++            completion(nil, "Another embedded refresh is already running.")
++            return
++        }
++        refreshTask = Task {
++            defer { refreshTask = nil }
++            guard UserDefaults.standard.bool(forKey: "hasAcceptedTOS"),
++                  UserDefaults.standard.bool(forKey: "hasCompletedAccountSetup") else {
++                completion(nil, "Open the built-in SideInstaller and complete its initial setup first.")
++                return
++            }
++            var needsAuthentication = false
++            let authenticationMonitor = Task { @MainActor in
++                guard SIEmbeddedIsLiveProcess() else { return }
++                while !Task.isCancelled {
++                    if Engine.shared.twoFactor != nil {
++                        needsAuthentication = true
++                        if let phase = Engine.shared.twoFactor { Engine.shared.cancelTwoFactor(phase) }
++                        return
++                    }
++                    do { try await Task.sleep(for: .milliseconds(200)) } catch { return }
++                }
++            }
++            defer { authenticationMonitor.cancel() }
++            do {
++                let result = try await AppRefreshService.shared.refreshAll { jobs, _ in
++                    let completed = jobs.filter {
++                        switch $0.state {
++                        case .done, .failed: return true
++                        default: return false
++                        }
++                    }.count
++                    progress(Double(completed) / Double(max(1, jobs.count)))
++                }
++                progress(1)
++                completion(result.dialog, nil)
++            } catch {
++                completion(nil, needsAuthentication
++                    ? "Apple requires two-factor authentication. Open the built-in SideInstaller, sign in there, then retry the Shortcut."
++                    : AppRefreshService.text(for: error))
++            }
++        }
++    }
++
++    @objc(cancelRefresh)
++    static func cancelRefresh() { refreshTask?.cancel() }
++
++    /// Keychain hand-off stays within this combined app's access groups. Apple
++    /// account passwords and developer-session tokens are never handed to LC.
++    static func storeCertificate(config: String, signingTeam: String?) throws -> EmbeddedCertificateHandoff {
++        guard let json = try JSONSerialization.jsonObject(with: Data(config.utf8)) as? [String: Any],
++              let encoded = json["certificateData"] as? String,
++              let certificate = Data(base64Encoded: encoded),
++              let password = json["certificatePassword"] as? String else {
++            throw EngineError.message("SideInstaller could not export its signing certificate.")
++        }
++        let report = try EmbeddedSigningIdentity.report(p12: certificate, password: password, team: signingTeam)
++        for (account, data) in [("signingCertificate", certificate),
++                                ("signingCertificatePassword", Data(password.utf8))] {
++            let query: [String: Any] = [
++                kSecClass as String: kSecClassGenericPassword,
++                kSecAttrService as String: "com.aault.livecontainer.sideinstaller",
++                kSecAttrAccount as String: account,
++            ]
++            let status = SecItemUpdate(query as CFDictionary,
++                                      [kSecValueData as String: data] as CFDictionary)
++            if status == errSecItemNotFound {
++                var add = query
++                add[kSecValueData as String] = data
++                add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
++                let added = SecItemAdd(add as CFDictionary, nil)
++                guard added == errSecSuccess else {
++                    throw EngineError.message("Certificate Keychain write failed (\(added)).")
++                }
++            } else if status != errSecSuccess {
++                throw EngineError.message("Certificate Keychain update failed (\(status)).")
++            }
++        }
++        // Keep an incompatible identity staged for an explicit host repair, but
++        // never replace LC's active identity with one the installed profile rejects.
++        let issue = SIEmbeddedActivateCertificate(certificate, password)
++        return EmbeddedCertificateHandoff(report: (issue ?? "Certificate installed in LiveContainer. No separate import is needed.") + "\n\n" + report,
++                                          activationIssue: issue)
++    }
++}
++
++struct EmbeddedLiveContainerBar: View {
++    @Environment(Engine.self) private var engine
++    @State private var showingSetup = false
++
++    var body: some View {
++        HStack {
++            Button("LiveContainer", systemImage: "arrow.uturn.backward") { SIEmbeddedReturnToHost() }
++            Spacer()
++            Button("Set up LiveContainer", systemImage: "checkmark.shield") { engine.embeddedSigningSetupPresented = true; showingSetup = true }
++        }
++        .disabled(engine.isRunning || AppRefreshService.shared.isRefreshing)
++        .font(.footnote)
++        .padding(.horizontal, 16)
++        .padding(.vertical, 8)
++        .background(.regularMaterial)
++        .sheet(isPresented: $showingSetup, onDismiss: { engine.embeddedSigningSetupPresented = false }) { EmbeddedSigningSetupView().environment(engine) }
++    }
++}
++
++private struct EmbeddedSigningSetupView: View {
++    @Environment(Engine.self) private var engine
++    @Environment(\.dismiss) private var dismiss
++    @State private var operation: Task<Void, Never>?
++    @State private var working = false
++    @State private var shownTwoFactor: TwoFactorPhase?
++    @State private var checked = false
++    @State private var needsRepair = false
++    @State private var hasRepairIPA = false
++    @State private var pickingIPA = false
++    @State private var confirmRepair = false
++    @State private var message = "Connect LocalDevVPN, then check signing. SideInstaller will sign in, check this LiveContainer's certificate, activate it when compatible, and run the signing test."
++
++    var body: some View {
++        NavigationStack {
++            Form {
++                Section("LiveContainer signing") {
++                    Label(working ? "Checking…" : (checked && !needsRepair ? "Signing test passed" : "Setup and repair"),
++                          systemImage: checked && !needsRepair ? "checkmark.circle.fill" : "checkmark.shield")
++                    Text(message).textSelection(.enabled)
++                    Button("Check and fix signing") { runCheck() }
++                        .disabled(working || engine.isRunning || AppRefreshService.shared.isRefreshing)
++                    if working { ProgressView() }
++                }
++                if needsRepair {
++                    Section("Repair this installation") {
++                        Text("Re-signs this LiveContainer in place with SideInstaller's certificate. Keep the same Apple account/team. Your apps and data stay in the existing installation.")
++                        Label(hasRepairIPA ? "Matching repair IPA is ready" : "This build's original combined IPA is needed",
++                              systemImage: hasRepairIPA ? "checkmark.circle" : "doc.badge.plus")
++                        Button("Choose original combined IPA…") { pickingIPA = true }.disabled(working)
++                        Button("Repair signing") { confirmRepair = true }
++                            .disabled(working || !hasRepairIPA || engine.isRunning || AppRefreshService.shared.isRefreshing)
++                    }
++                }
++            }
++            .navigationTitle("Set up LiveContainer")
++            .navigationBarTitleDisplayMode(.inline)
++            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() }.disabled(working) } }
++            .interactiveDismissDisabled(working)
++            .onAppear { updateRepairIPA() }
++            .onDisappear { operation?.cancel() }
++            .sheet(isPresented: Binding(get: { engine.twoFactor != nil },
++                                       set: { if !$0, let phase = engine.twoFactor { engine.cancelTwoFactor(phase) } })) {
++                if let phase = engine.twoFactor ?? shownTwoFactor { TwoFactorSheet(phase: phase) }
++            }
++            .onChange(of: engine.twoFactor) { _, phase in
++                if let phase { shownTwoFactor = phase }
++            }
++            .fileImporter(isPresented: $pickingIPA, allowedContentTypes: [UTType(filenameExtension: "ipa") ?? .data]) { result in
++                switch result {
++                case .success(let url):
++                    start {
++                        let scoped = url.startAccessingSecurityScopedResource()
++                        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
++                        let host = try EmbeddedSigningIdentity.host()
++                        let revision = host.bundle.object(forInfoDictionaryKey: "SIEmbeddedSourceRevision") as? String
++                        guard let revision, IPALibrary.appInfo(at: url)?.bundleID == EmbeddedSigningIdentity.baseID,
++                              IPALibrary.embeddedRevision(at: url) == revision else {
++                            throw EngineError.message("Choose the original combined IPA for the build currently installed. A different revision cannot repair this installation.")
++                        }
++                        await engine.importCustomIPA(from: url)
++                        if let error = engine.lastError { throw EngineError.message(error) }
++                        updateRepairIPA()
++                        message = "Repair IPA ready. Tap Repair signing to continue."
++                    }
++                case .failure(let error): message = error.localizedDescription
++                }
++            }
++            .confirmationDialog("Repair LiveContainer signing?", isPresented: $confirmRepair, titleVisibility: .visible) {
++                Button("Repair signing") {
++                    start {
++                        try await engine.repairEmbeddedHostSigning()
++                        checked = false
++                        message = "Host replacement reported completion. Fully close and reopen LiveContainer, then return here and tap Check and fix signing. No manual certificate import is needed."
++                    }
++                }
++            } message: {
++                Text("This replaces the running app with the same build, bundle ID and team, and may close it before confirmation. Back up important guest data first. Reopen afterwards to finish the signing test.")
++            }
++        }
++    }
++
++    private func updateRepairIPA() { hasRepairIPA = (try? engine.embeddedHostRepairIPA()) != nil }
++
++    private func runCheck() {
++        checked = false
++        start {
++            let result = try await engine.checkEmbeddedHostSigning()
++            needsRepair = result.needsRepair
++            checked = true
++            message = result.message
++            updateRepairIPA()
++        }
++    }
++
++    private func start(_ action: @escaping @MainActor () async throws -> Void) {
++        guard !working else { return }
++        working = true
++        operation = Task { @MainActor in
++            defer { working = false; operation = nil }
++            do { try Task.checkCancellation(); try await action() }
++            catch { checked = false; message = AppRefreshService.text(for: error) }
++        }
++    }
++}
++#endif
+diff --git a/ios-app/EmbeddedSigningIdentity.swift b/ios-app/EmbeddedSigningIdentity.swift
+new file mode 100644
+index 0000000..5d49a60
+--- /dev/null
++++ b/ios-app/EmbeddedSigningIdentity.swift
+@@ -0,0 +1,84 @@
++#if SIDEINSTALLER_EMBEDDED
++import Foundation
++import Security
++import CryptoKit
++
++/// Inspects public certificate/profile data only. Never exports a private key.
++enum EmbeddedSigningIdentity {
++    static let baseID = "com.aault.livecontainer.sideinstaller"
++
++    static func profile(at bundle: Bundle) throws -> [String: Any] {
++        let data = try Data(contentsOf: bundle.bundleURL.appendingPathComponent("embedded.mobileprovision"))
++        return try decodeProfile(data)
++    }
++
++    static func decodeProfile(_ data: Data) throws -> [String: Any] {
++        guard let start = data.range(of: Data("<?xml".utf8)),
++              let end = data.range(of: Data("</plist>".utf8), in: start.lowerBound..<data.endIndex),
++              let dict = try PropertyListSerialization.propertyList(
++                from: data[start.lowerBound..<end.upperBound], format: nil) as? [String: Any] else {
++            throw EngineError.message("The host provisioning profile could not be decoded. No signing identity was changed.")
++        }
++        return dict
++    }
++
++    static func host() throws -> (bundle: Bundle, profile: [String: Any], team: String, id: String) {
++        guard let bundle = SIEmbeddedHostBundle(), let id = bundle.bundleIdentifier else {
++            throw EngineError.message("Unable to locate the installed LiveContainer host.")
++        }
++        let profile = try self.profile(at: bundle)
++        let entitlements = profile["Entitlements"] as? [String: Any] ?? [:]
++        guard let team = entitlements["com.apple.developer.team-identifier"] as? String,
++              entitlements["application-identifier"] as? String == team + "." + id,
++              id == baseID + "." + team else {
++            throw EngineError.message("The installed host's bundle ID/team/profile do not match this experimental build. Repair was stopped to avoid installing a second copy.")
++        }
++        if let runtimeTeam = SIEmbeddedHostTeam(), runtimeTeam != team {
++            throw EngineError.message("Host profile team \(team) differs from process team \(runtimeTeam). Repair was stopped.")
++        }
++        return (bundle, profile, team, id)
++    }
++
++    static func certificate(p12: Data, password: String) throws -> Data {
++        var imported: CFArray?
++        let status = SecPKCS12Import(p12 as CFData,
++            [kSecImportExportPassphrase as String: password] as CFDictionary, &imported)
++        guard status == errSecSuccess,
++              let items = imported as? [[String: Any]], let item = items.first,
++              let identity = item[kSecImportItemIdentity as String] else {
++            throw EngineError.message("Unable to read the shared PKCS#12 identity (Security status \(status)).")
++        }
++        var cert: SecCertificate?
++        let certStatus = SecIdentityCopyCertificate(identity as! SecIdentity, &cert)
++        guard certStatus == errSecSuccess, let cert else {
++            throw EngineError.message("The shared identity has no readable signing certificate (\(certStatus)).")
++        }
++        return SecCertificateCopyData(cert) as Data
++    }
++
++    static func permits(_ certificate: Data, profile: [String: Any]) -> Bool {
++        (profile["DeveloperCertificates"] as? [Data] ?? []).contains(certificate)
++    }
++
++    static func fingerprint(_ certificate: Data) -> String {
++        SHA256.hash(data: certificate).map { String(format: "%02x", $0) }.joined()
++    }
++
++    static func report(p12: Data, password: String, team: String?) throws -> String {
++        let host = try host()
++        guard let team else {
++            throw EngineError.message("SideInstaller's selected team is unavailable. Host team: \(host.team). Sign in again; no certificate was replaced.")
++        }
++        guard team == host.team else {
++            throw EngineError.message("Team mismatch: SideInstaller \(team); installed LiveContainer \(host.team). Use the account/team that signed this host. No certificate was replaced.")
++        }
++        let certificate = try certificate(p12: p12, password: password)
++        let permitted = permits(certificate, profile: host.profile)
++        let expired = (host.profile["ExpirationDate"] as? Date).map { $0 <= Date() } ?? true
++        let result = permitted
++            ? "The shared certificate is authorised by the installed host profile."
++            : "CERTIFICATE MISMATCH: the installed host profile does not authorise SideInstaller's certificate. Open Set up LiveContainer → Repair signing and choose this build's original combined IPA."
++        return "\(result)\nHost team: \(host.team)\nCertificate SHA-256: \(fingerprint(certificate))\nHost profile: \(expired ? "expired or unreadable expiry" : "within its expiry date"). Revocation status is a separate online check."
++    }
++}
++#endif
+diff --git a/ios-app/Engine.swift b/ios-app/Engine.swift
+index 7892339..98fb763 100644
+--- a/ios-app/Engine.swift
++++ b/ios-app/Engine.swift
+@@ -424,6 +424,9 @@ final class Engine {
+     @ObservationIgnored private var askedLocalNetwork = false
+
+     @ObservationIgnored private var pipelineTask: Task<Void, Never>?
++    #if SIDEINSTALLER_EMBEDDED
++    @ObservationIgnored private var embeddedInstallLease: EmbeddedRefreshLease?
++    #endif
+     /// The IPA download a run starts as soon as the network is up, so it runs
+     /// alongside pairing and sign-in instead of after them.
+     @ObservationIgnored private var prefetch: (source: InstallSource, channel: ReleaseChannel, version: String?,
+@@ -564,6 +567,13 @@ final class Engine {
+                                                object: nil, queue: .main) { [weak self] _ in
+             self?.foregroundVisits += 1
+         }
++        #if SIDEINSTALLER_EMBEDDED
++        // Engine's initializer is not actor-isolated. Run the host preference
++        // handoff on its required actor after initialization has completed.
++        Task { @MainActor [weak self] in
++            if let warning = EmbeddedJITPairing.syncIfAvailable() { self?.log(warning) }
++        }
++        #endif
+     }
+
+     // MARK: - Anisette servers
+@@ -650,7 +660,7 @@ final class Engine {
+     /// has answered.
+     @MainActor
+     func runOneClick(afterProbe: Bool = false) {
+-        guard !isRunning else { return }
++        guard !isRunning, !AppRefreshService.shared.isRefreshing else { return }
+         // Nothing downstream works on an older iOS.
+         guard osSupported else {
+             log("⛔️ iOS \(osVersionText) isn't supported — SideInstaller needs iOS \(Engine.minimumTunnelOSText) or later.")
+@@ -710,6 +720,10 @@ final class Engine {
+             setGuide(Guides.deviceIPMismatch)
+             return
+         }
++        #if SIDEINSTALLER_EMBEDDED
++        do { embeddedInstallLease = try EmbeddedRefreshLease() }
++        catch { log("⛔️ \(error.localizedDescription)"); return }
++        #endif
+         resetRun()
+         isRunning = true
+         log("=== Starting one-click install ===")
+@@ -765,6 +779,9 @@ final class Engine {
+                 outcome = .stopped
+             }
+             stopBackgroundWork()
++            #if SIDEINSTALLER_EMBEDDED
++            embeddedInstallLease = nil
++            #endif
+             isRunning = false
+             isCancelling = false
+             pairingPIN = nil
+@@ -2043,6 +2060,9 @@ final class Engine {
+                                      forMadeira: source == .madeira || Self.isMadeira(ipaPath: ipa))
+             }
+             signedAppPath = path
++            #if SIDEINSTALLER_EMBEDDED
++            await updateEmbeddedCertificateIfPossible()
++            #endif
+             // Read the app's name from the signed bundle (imported IPAs have none before this).
+             signedDisplayName = signedAppName()
+             setStep(.sign, .done)
+@@ -2624,6 +2644,84 @@ final class Engine {
+
+     // MARK: Success
+
++    #if SIDEINSTALLER_EMBEDDED
++    var embeddedSigningSetupPresented = false
++
++    @MainActor
++    private func exportEmbeddedCertificate() async throws -> EmbeddedCertificateHandoff {
++        guard let session = signSession else { throw EngineError.message(L("Not signed in.")) }
++        let (config, team) = try await onSignQueue {
++            // Read the selected team from the session itself, not a queued UI
++            // publication. The developer token is never returned or logged.
++            var json: UnsafeMutablePointer<CChar>?
++            var error: UnsafeMutablePointer<CChar>?
++            let rc = si_signing_account(session, &json, &error)
++            defer { json.map { si_string_free($0) }; error.map { si_string_free($0) } }
++            guard rc == 0, let json,
++                  let dict = try JSONSerialization.jsonObject(with: Data(String(cString: json).utf8)) as? [String: Any],
++                  let team = dict["team_id"] as? String else {
++                throw EngineError.message("Unable to read the selected signing team from the Apple session.")
++            }
++            return (try self.buildAccountConfig(session: session), team)
++        }
++        signingTeamID = team
++        let report = try SIEmbeddedBridge.storeCertificate(config: config, signingTeam: team)
++        log("Signing certificate shared with this combined LiveContainer. No Apple ID password was shared.")
++        return report
++    }
++
++    @MainActor
++    private func updateEmbeddedCertificateIfPossible() async {
++        do { _ = try await exportEmbeddedCertificate() }
++        catch { log("LiveContainer certificate hand-off: \(error.localizedDescription)") }
++    }
++
++    @MainActor
++    func embeddedHostRepairIPA() throws -> URL? {
++        let host = try EmbeddedSigningIdentity.host()
++        guard let revision = host.bundle.object(forInfoDictionaryKey: "SIEmbeddedSourceRevision") as? String else { return nil }
++        return IPALibrary.scan().first(where: {
++            IPALibrary.appInfo(at: $0.url)?.bundleID == EmbeddedSigningIdentity.baseID
++                && IPALibrary.embeddedRevision(at: $0.url) == revision
++        })?.url
++    }
++
++    @MainActor
++    func checkEmbeddedHostSigning() async throws -> EmbeddedSigningCheck {
++        try await AppRefreshService.shared.withExclusiveOperation {
++            try await self.prepareRefresh()
++            let handoff = try await self.exportEmbeddedCertificate()
++            try Task.checkCancellation()
++            if let issue = handoff.activationIssue {
++                return EmbeddedSigningCheck(needsRepair: true, message: issue)
++            }
++            let (valid, error): (Bool, String?) = await withCheckedContinuation { continuation in
++                SIEmbeddedTestSigning { valid, error in continuation.resume(returning: (valid, error)) }
++            }
++            try Task.checkCancellation()
++            return EmbeddedSigningCheck(needsRepair: !valid, message: valid
++                ? "Signing test passed on this device. The certificate is installed and LiveContainer is ready for JIT-less apps. No separate certificate import is needed."
++                : "The certificate matches the host profile, but iOS rejected the signing test. Repair signing can renew the host profile using this same identity; this error alone does not prove a certificate mismatch. If repair still fails, copy these details when reporting it.\n\n" + (error ?? "No error details were returned."))
++        }
++    }
++
++    @MainActor
++    func repairEmbeddedHostSigning() async throws {
++        try await AppRefreshService.shared.withExclusiveOperation {
++            let host = try EmbeddedSigningIdentity.host()
++            guard let ipa = try self.embeddedHostRepairIPA() else {
++                throw EngineError.message("Choose this build's original combined IPA in Set up LiveContainer first.")
++            }
++            try await self.prepareRefresh()
++            // Export also reads and validates the session's actual team.
++            _ = try await self.exportEmbeddedCertificate()
++            try Task.checkCancellation()
++            try await self.refreshInstalledApp(named: "LiveContainer + SI", ipaPath: ipa.path,
++                                               expectedEmbeddedHostID: host.id)
++        }
++    }
++    #endif
++
+     @MainActor
+     private func finishSuccess() {
+         finished = true
+@@ -3047,6 +3145,9 @@ final class Engine {
+         try data.write(to: PrivateStore.pairingFile, options: .atomic)
+         // Drop the cached merged file; it was built from the old record.
+         CompositePairingFile.invalidateMerged()
++        #if SIDEINSTALLER_EMBEDDED
++        if let warning = EmbeddedJITPairing.syncIfAvailable() { log(warning) }
++        #endif
+         pairingFilePath = PrivateStore.pairingFile.path
+         importedPairingName = name
+         UserDefaults.standard.set(name, forKey: Engine.importedPairingNameKey)
+@@ -3547,14 +3648,26 @@ final class Engine {
+             throw EngineError.message(L("No Apple ID saved. Add one in Settings › Account."))
+         }
+         try await ensurePairingConnection()
+-        try await signIn(updatingChecklist: false, purpose: .refresh)
++        // Use the existing sign-in run token so a cancelled Shortcut cannot
++        // leave the Rust 2FA callback waiting on a sheet it can no longer show.
++        let run = finishedRuns
++        try await withTaskCancellationHandler {
++            try Task.checkCancellation()
++            try await signIn(updatingChecklist: false, run: run, purpose: .refresh)
++        } onCancel: {
++            DispatchQueue.main.async {
++                self.finishedRuns = max(self.finishedRuns, run + 1)
++                if let phase = self.twoFactor { self.cancelTwoFactor(phase) }
++            }
++        }
++        try Task.checkCancellation()
+     }
+
+     /// Re-signs `ipaPath` (issuing a new provisioning profile) and installs it
+     /// over the existing copy. Bundle ID, team and certificate are unchanged, so
+     /// installd treats it as an upgrade and app data is kept.
+     @MainActor
+-    func refreshInstalledApp(named name: String, ipaPath: String) async throws {
++    func refreshInstalledApp(named name: String, ipaPath: String, expectedEmbeddedHostID: String? = nil) async throws {
+         guard let session = signSession else { throw EngineError.message(L("Not signed in.")) }
+         let udid = deviceUDID ?? ""
+         let device = deviceName ?? ""
+@@ -3573,6 +3686,64 @@ final class Engine {
+             throw EngineError.message(L("Apple won't issue a signing certificate for this Apple ID: it reports that one already exists (error 7460). Under Tools › Certificates, use SideStore's certificate or revoke that one, then refresh again."))
+         }
+         defer { Self.discardSignedBundle(at: signed) }
++        #if SIDEINSTALLER_EMBEDDED
++        await updateEmbeddedCertificateIfPossible()
++        if let expectedEmbeddedHostID {
++            let bundle = Bundle(path: signed)
++            guard let bundle, bundle.bundleIdentifier == expectedEmbeddedHostID,
++                  bundle.object(forInfoDictionaryKey: "SIEmbeddedBuild") as? Bool == true,
++                  FileManager.default.fileExists(atPath: signed + "/PlugIns/LiveProcess.appex"),
++                  FileManager.default.fileExists(atPath: signed + "/Frameworks/SideInstallerApp.framework/SideInstaller") else {
++                throw EngineError.message("Repair stopped: the signed bundle ID, embedded app or LiveProcess is incorrect. Nothing was installed.")
++            }
++            let profile = try EmbeddedSigningIdentity.profile(at: bundle)
++            let host = try EmbeddedSigningIdentity.host()
++            guard let oldExecutable = host.bundle.executablePath,
++                  let oldXML = SIEmbeddedEntitlementsAtPath(oldExecutable),
++                  let oldEntitlements = try PropertyListSerialization.propertyList(from: Data(oldXML.utf8), format: nil) as? [String: Any],
++                  let oldGroups = oldEntitlements["keychain-access-groups"] as? [String] else {
++                throw EngineError.message("Repair stopped: the current host's keychain groups could not be read. Nothing was installed.")
++            }
++            var bundles = [bundle]
++            if let plugins = bundle.builtInPlugInsURL {
++                bundles += try FileManager.default.contentsOfDirectory(at: plugins, includingPropertiesForKeys: nil)
++                    .filter { $0.pathExtension == "appex" }.compactMap { Bundle(url: $0) }
++            }
++            for target in bundles {
++                guard let id = target.bundleIdentifier,
++                      id == host.id || id.hasPrefix(host.id + "."),
++                      let executable = target.executablePath,
++                      let xml = SIEmbeddedEntitlementsAtPath(executable),
++                      let entitlements = try PropertyListSerialization.propertyList(from: Data(xml.utf8), format: nil) as? [String: Any],
++                      entitlements["com.apple.developer.team-identifier"] as? String == host.team,
++                      entitlements["get-task-allow"] as? Bool == true,
++                      let groups = entitlements["keychain-access-groups"] as? [String],
++                      (0..<128).allSatisfy({ index in
++                          groups.contains(host.team + "." + EmbeddedSigningIdentity.baseID + ".shared" + (index == 0 ? "" : ".\(index)"))
++                      }),
++                      (entitlements["com.apple.security.application-groups"] as? [String] ?? [])
++                        .contains("group." + host.id) else {
++                    throw EngineError.message("Repair stopped: \(target.bundleURL.lastPathComponent) is missing its expected identity, development entitlement, shared app group or 128 isolated keychain groups. Nothing was installed.")
++                }
++                if target.bundleIdentifier == host.id,
++                   let newGroups = entitlements["keychain-access-groups"] as? [String] {
++                    let missing = oldGroups.filter { !newGroups.contains($0) }
++                    guard missing.isEmpty else {
++                        throw EngineError.message("Repair stopped to preserve Keychain access. The installed host has groups the new signature cannot retain: \(missing.joined(separator: ", ")). Nothing was installed.")
++                    }
++                }
++            }
++            // Re-read the identity that was just exported; ensure the newly
++            // issued profile authorises it before replacing the running host.
++            let config = try await onSignQueue { try self.buildAccountConfig(session: session) }
++            let dict = try JSONSerialization.jsonObject(with: Data(config.utf8)) as? [String: Any]
++            guard let encoded = dict?["certificateData"] as? String, let p12 = Data(base64Encoded: encoded),
++                  let password = dict?["certificatePassword"] as? String,
++                  EmbeddedSigningIdentity.permits(try EmbeddedSigningIdentity.certificate(p12: p12, password: password), profile: profile) else {
++                throw EngineError.message("Repair stopped: the new host profile does not authorise the signing certificate. Nothing was installed.")
++            }
++        }
++        #endif
+         installProgress = 0
+         let ip = deviceHost
+         try await onDeviceQueue {
+diff --git a/ios-app/InstallActivity.swift b/ios-app/InstallActivity.swift
+index 50fe4cd..c799f0d 100644
+--- a/ios-app/InstallActivity.swift
++++ b/ios-app/InstallActivity.swift
+@@ -433,22 +433,23 @@ final class InstallActivity {
+         // A task iOS only queues would start after the user stopped waiting.
+         request.strategy = .fail
+         taskID = identifier
++        #if SIDEINSTALLER_IOS27_SDK
+         if #available(iOS 27.0, *) {
+-            // Not from the main thread, the header says.
++            // New SDKs import the async API as submit(_:).
+             Task.detached { [weak self] in
+-                do {
+-                    try await BGTaskScheduler.shared.submitTaskRequest(request)
+-                } catch {
+-                    await self?.taskRefused(identifier, error)
+-                }
++                do { try await BGTaskScheduler.shared.submit(request) }
++                catch { await self?.taskRefused(identifier, error) }
+             }
+         } else {
+-            do {
+-                try BGTaskScheduler.shared.submit(request)
+-            } catch {
+-                taskRefused(identifier, error)
+-            }
+-        }
++            do { try BGTaskScheduler.shared.submit(request) }
++            catch { taskRefused(identifier, error) }
++        }
++        #else
++        // A runtime availability check cannot make an API appear in an older
++        // SDK. The supported synchronous API retains the same task lifecycle.
++        do { try BGTaskScheduler.shared.submit(request) }
++        catch { taskRefused(identifier, error) }
++        #endif
+         return true
+     }
+
+diff --git a/ios-app/JITPairingStore.swift b/ios-app/JITPairingStore.swift
+new file mode 100644
+index 0000000..2e37e25
+--- /dev/null
++++ b/ios-app/JITPairingStore.swift
+@@ -0,0 +1,38 @@
++import Foundation
++import CryptoKit
++
++/// Private transport shared only by the embedded installer and its LC host.
++/// No keys are placed in URLs, preferences, notifications or logs.
++enum JITPairingStore {
++    static let relativePath = "SideInstaller/JIT/pairing.plist"
++
++    static func validate(_ data: Data) throws {
++        guard let record = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
++              let identifier = record["identifier"] as? String, !identifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
++              let secret = record["private_key"] as? Data, secret.count == 32,
++              let publicKey = record["public_key"] as? Data, publicKey.count == 32,
++              let key = try? Curve25519.Signing.PrivateKey(rawRepresentation: secret),
++              key.publicKey.rawRepresentation == publicKey else {
++            throw NSError(domain: "SideInstaller.JITPairing", code: 1, userInfo: [NSLocalizedDescriptionKey:
++                "This file has no valid Remote Pairing key pair. Generate a pairing file in the built-in SideInstaller on this device."])
++        }
++    }
++
++    static func save(_ data: Data, to url: URL) throws {
++        try validate(data)
++        if (try? Data(contentsOf: url)) == data { return }
++        let directory = url.deletingLastPathComponent()
++        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
++                                                attributes: [.posixPermissions: 0o700])
++        #if os(iOS)
++        try data.write(to: url, options: [.atomic, .completeFileProtection])
++        #else
++        try data.write(to: url, options: .atomic)
++        #endif
++        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
++        var privateURL = url
++        var values = URLResourceValues()
++        values.isExcludedFromBackup = true
++        try privateURL.setResourceValues(values)
++    }
++}
+diff --git a/ios-app/KeepAlive.swift b/ios-app/KeepAlive.swift
+index cf97360..a4f99c1 100644
+--- a/ios-app/KeepAlive.swift
++++ b/ios-app/KeepAlive.swift
+@@ -167,6 +167,7 @@ final class KeepAlive: NSObject {
+             default: break
+             }
+         }
++        #if SIDEINSTALLER_IOS27_SDK
+         if #available(iOS 27.0, *) {
+             // While it plays, this app never deactivates the session itself.
+             observe(AVAudioSession.didBecomeInactiveNotification) { me, note in
+@@ -178,6 +179,7 @@ final class KeepAlive: NSObject {
+                 me.interruptionEnded()
+             }
+         }
++        #endif
+         // AirPods connecting, headphones unplugged, CarPlay.
+         observe(AVAudioSession.routeChangeNotification) { me, note in
+             let reason = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
+diff --git a/ios-app/PairingController.swift b/ios-app/PairingController.swift
+index 8e09483..2a6fd86 100644
+--- a/ios-app/PairingController.swift
++++ b/ios-app/PairingController.swift
+@@ -386,6 +386,9 @@ final class PairingController {
+                 engine.pairingStatus = L("paired: %@ (%dB)", name, size)
+                 // The merged file is now stale; the cached lockdown record is kept.
+                 CompositePairingFile.invalidateMerged()
++                #if SIDEINSTALLER_EMBEDDED
++                if let warning = EmbeddedJITPairing.syncIfAvailable() { engine.log(warning) }
++                #endif
+                 overSettings.finish(paired: true)
+                 resolve(run, .success(PairedDevice(path: path, deviceName: name, deviceModel: model,
+                                                    address: address)))
+diff --git a/ios-app/PairingManager.swift b/ios-app/PairingManager.swift
+index 3385c5a..8adcf80 100644
+--- a/ios-app/PairingManager.swift
++++ b/ios-app/PairingManager.swift
+@@ -45,6 +45,19 @@ final class PairingManager: ObservableObject {
+         return URL(fileURLWithPath: PairingController.pairingFilePath())
+     }
+
++    #if SIDEINSTALLER_EMBEDDED
++    @Published private(set) var jitPairingStatus = ""
++
++    func sendToLiveContainerJIT() {
++        do {
++            try EmbeddedJITPairing.sendCurrent(activate: true)
++            lastError = nil
++            jitPairingStatus = "Current pairing shared with LiveContainer JIT."
++            lastSuccess = "Pairing sent to LiveContainer JIT. Return to LiveContainer → Settings → Built-in JIT setup and prepare the device. No new pairing was created."
++        } catch { jitPairingStatus = "Pairing sharing failed."; lastError = error.localizedDescription }
++    }
++    #endif
++
+     // MARK: - Actions
+
+     /// Re-stat the pairing file, cheap enough to call whenever the tab appears.
+@@ -55,6 +68,14 @@ final class PairingManager: ObservableObject {
+         pairingFileExists = FileManager.default.fileExists(atPath: path) && size > 0
+         pairingFileSize = size
+         pairingFileDate = attrs?[.modificationDate] as? Date
++        #if SIDEINSTALLER_EMBEDDED
++        if let warning = EmbeddedJITPairing.syncIfAvailable() {
++            jitPairingStatus = warning
++            engine.log(warning)
++        } else if pairingFileExists {
++            jitPairingStatus = "Current pairing shared with LiveContainer JIT. You do not need the separate SideInstaller app."
++        } else { jitPairingStatus = "" }
++        #endif
+     }
+
+     /// Run the RPPairing host for a fresh pairing file, showing the PIN through
+diff --git a/ios-app/PairingView.swift b/ios-app/PairingView.swift
+index 1198c4f..1a934fd 100644
+--- a/ios-app/PairingView.swift
++++ b/ios-app/PairingView.swift
+@@ -1,5 +1,16 @@
+ import SwiftUI
+ import UIKit
++import UniformTypeIdentifiers
++
++#if SIDEINSTALLER_EMBEDDED
++private struct PairingExportDocument: FileDocument {
++    static var readableContentTypes: [UTType] { [.data] }
++    var data: Data
++    init(data: Data) { self.data = data }
++    init(configuration: ReadConfiguration) throws { data = configuration.file.regularFileContents ?? Data() }
++    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper { FileWrapper(regularFileWithContents: data) }
++}
++#endif
+
+ /// The Pairing page: generate the pairing file, export it, and write it into a
+ /// supported app installed on this iPhone over the loopback tunnel. Pushed from
+@@ -11,6 +22,10 @@ struct PairingView: View {
+     @ObservedObject var manager: PairingManager
+
+     @State private var showSettings = false
++    #if SIDEINSTALLER_EMBEDDED
++    @State private var exportingPairing = false
++    @State private var pairingDocument: PairingExportDocument?
++    #endif
+
+     var body: some View {
+         ScrollView {
+@@ -34,6 +49,15 @@ struct PairingView: View {
+         .background(AppBackground())
+         .toolbar { settingsToolbarItem(isPresented: $showSettings) }
+         .sheet(isPresented: $showSettings) { SettingsView() }
++        #if SIDEINSTALLER_EMBEDDED
++        .fileExporter(isPresented: $exportingPairing, document: pairingDocument,
++                      contentType: .data, defaultFilename: "SideInstaller-pairing.plist") { result in
++            pairingDocument = nil
++            if case .failure(let error) = result, (error as NSError).code != NSUserCancelledError {
++                manager.lastError = error.localizedDescription
++            }
++        }
++        #endif
+         .onAppear {
+             manager.refresh()
+             manager.autoScan()
+@@ -96,6 +120,23 @@ struct PairingView: View {
+                 .disabled(manager.isBusy || engine.isRunning)
+
+                 if let url = manager.exportURL {
++                    #if SIDEINSTALLER_EMBEDDED
++                    Button("Use pairing for LiveContainer JIT", systemImage: "bolt.fill") {
++                        manager.sendToLiveContainerJIT()
++                    }
++                    .buttonStyle(.borderedProminent)
++                    .disabled(manager.isBusy || engine.isRunning)
++                    Text(manager.jitPairingStatus)
++                        .font(.footnote).foregroundStyle(.secondary)
++                    Button(L("Export pairing file"), systemImage: "square.and.arrow.up") {
++                        do {
++                            pairingDocument = PairingExportDocument(data: try Data(contentsOf: url))
++                            exportingPairing = true
++                        } catch { manager.lastError = error.localizedDescription }
++                    }
++                    .buttonStyle(.bordered)
++                    .disabled(manager.isBusy)
++                    #else
+                     ShareLink(item: url) {
+                         Label(L("Export pairing file"), systemImage: "square.and.arrow.up")
+                             .font(.subheadline.weight(.medium))
+@@ -104,6 +145,7 @@ struct PairingView: View {
+                     .buttonStyle(SecondaryButtonStyle())
+                     .controlSize(.regular)
+                     .disabled(manager.isBusy)
++                    #endif
+                 }
+             }
+         }
+diff --git a/ios-app/RefreshAllAppsIntent.swift b/ios-app/RefreshAllAppsIntent.swift
+new file mode 100644
+index 0000000..42e2097
+--- /dev/null
++++ b/ios-app/RefreshAllAppsIntent.swift
+@@ -0,0 +1,59 @@
++import AppIntents
++import Foundation
++
++struct RefreshAllAppsIntent: AppIntent, ProgressReportingIntent, ForegroundContinuableIntent {
++    static var title: LocalizedStringResource = "Refresh All Apps"
++    static var description = IntentDescription("Re-signs and refreshes your sideloaded apps before they expire.")
++    static var openAppWhenRun = false
++
++    private enum Event: Sendable {
++        case finished(RefreshAllResult)
++        case deadline
++    }
++
++    @MainActor
++    func perform() async throws -> some IntentResult & ProvidesDialog {
++        let intentProgress = progress
++        intentProgress.totalUnitCount = 1
++        intentProgress.completedUnitCount = 0
++        let deadline = ContinuousClock.now + .seconds(27)
++
++        // Both children belong to this invocation. Foreground continuation keeps
++        // the same refresh alive; it never starts discovery or signing twice.
++        let result = try await withThrowingTaskGroup(of: Event.self) { group in
++            group.addTask { @MainActor in
++                let result = try await AppRefreshService.shared.refreshAll { jobs, _ in
++                    intentProgress.totalUnitCount = Int64(max(1, jobs.count))
++                    intentProgress.completedUnitCount = Int64(jobs.filter {
++                        switch $0.state {
++                        case .done, .failed: return true
++                        default: return false
++                        }
++                    }.count)
++                }
++                return .finished(result)
++            }
++            group.addTask {
++                try await Task.sleep(until: deadline, clock: .continuous)
++                return .deadline
++            }
++            defer { group.cancelAll() }
++
++            while let event = try await group.next() {
++                switch event {
++                case .finished(let result):
++                    try Task.checkCancellation()
++                    return result
++                case .deadline:
++                    // If declined or cancelled, structured concurrency cancels
++                    // the refresh and waits for the current install to finish.
++                    try await requestToContinueInForeground(
++                        "SideInstaller needs more time to finish refreshing your apps.")
++                }
++            }
++            throw CancellationError()
++        }
++        intentProgress.completedUnitCount = intentProgress.totalUnitCount
++        return .result(dialog: "\(result.dialog)")
++    }
++}
+diff --git a/ios-app/RootView.swift b/ios-app/RootView.swift
+index f905bed..cb9e2d6 100644
+--- a/ios-app/RootView.swift
++++ b/ios-app/RootView.swift
+@@ -113,7 +113,13 @@ struct RootView: View {
+         .preferredColorScheme(.dark)
+         // A swipe down is a cancel; the sign-in closing it is not.
+         .sheet(isPresented: Binding(
+-            get: { engine.twoFactor != nil },
++            get: {
++                #if SIDEINSTALLER_EMBEDDED
++                return engine.twoFactor != nil && !engine.embeddedSigningSetupPresented
++                #else
++                return engine.twoFactor != nil
++                #endif
++            },
+             set: { if !$0, let phase = engine.twoFactor { engine.cancelTwoFactor(phase) } }
+         )) {
+             if let phase = engine.twoFactor ?? shownTwoFactor {
+diff --git a/ios-app/SideInstallerApp.swift b/ios-app/SideInstallerApp.swift
+index b068ea2..97ecd2d 100644
+--- a/ios-app/SideInstallerApp.swift
++++ b/ios-app/SideInstallerApp.swift
+@@ -18,10 +18,17 @@ struct SideInstallerApp: App {
+
+     init() {
+         // A pairing code still up from a run that was killed means nothing now.
++        #if SIDEINSTALLER_EMBEDDED
++        if !SIEmbeddedIsLiveProcess() {
++            PairingLiveActivity.shared.endLeftovers()
++            PairingNotification.shared.reset()
++            InstallActivity.shared.endLeftovers()
++        }
++        #else
+         PairingLiveActivity.shared.endLeftovers()
+         PairingNotification.shared.reset()
+-        // So is an install's progress.
+         InstallActivity.shared.endLeftovers()
++        #endif
+         // iOS hands over the last crash's diagnostic now, for Report a problem.
+         CrashDiagnostics.shared.start()
+         // Drawn now so the first tap already has its sound.
+@@ -30,6 +37,12 @@ struct SideInstallerApp: App {
+
+     var body: some Scene {
+         WindowGroup {
++            VStack(spacing: 0) {
++                #if SIDEINSTALLER_EMBEDDED
++                if !SIEmbeddedIsLiveProcess(), hasAcceptedTOS && hasCompletedAccountSetup {
++                    EmbeddedLiveContainerBar().environment(engine).environmentObject(localizer)
++                }
++                #endif
+             ZStack {
+                 if hasAcceptedTOS && hasCompletedAccountSetup {
+                     RootView()
+@@ -52,6 +65,9 @@ struct SideInstallerApp: App {
+                         .zIndex(1)
+                 }
+             }
++            .frame(maxWidth: .infinity, maxHeight: .infinity)
++            .clipped()
++            }
+             .animation(.smooth(duration: 0.5), value: hasCompletedAccountSetup)
+             // Every switch in the app clicks on and off.
+             .toggleStyle(SoundingToggleStyle())
+diff --git a/ios-app/SideStoreDownloader.swift b/ios-app/SideStoreDownloader.swift
+index 1b0894f..ad2747e 100644
+--- a/ios-app/SideStoreDownloader.swift
++++ b/ios-app/SideStoreDownloader.swift
+@@ -2099,6 +2099,15 @@ extension IPALibrary {
+         } ?? false
+     }
+
++    #if SIDEINSTALLER_EMBEDDED
++    static func embeddedRevision(at url: URL) -> String? {
++        guard let raw = infoPlist(inIPA: url),
++              let dict = try? PropertyListSerialization.propertyList(from: raw, format: nil) as? [String: Any],
++              dict["SIEmbeddedBuild"] as? Bool == true else { return nil }
++        return dict["SIEmbeddedSourceRevision"] as? String
++    }
++    #endif
++
+     /// One file inside an IPA, for copying it out without unpacking the rest.
+     struct ArchiveFile {
+         /// Path inside the archive, e.g. "Payload/SideStore.app/Assets.car".
+diff --git a/ios-app/UpdateChecker.swift b/ios-app/UpdateChecker.swift
+index a0d319d..d468a77 100644
+--- a/ios-app/UpdateChecker.swift
++++ b/ios-app/UpdateChecker.swift
+@@ -32,6 +32,7 @@ final class UpdateChecker: ObservableObject {
+
+     /// Fetch the latest release's tag and reveal the banner if it's newer.
+     func check() async {
++        #if !SIDEINSTALLER_EMBEDDED
+         guard let url = URL(string: Self.latestReleaseAPIURL) else { return }
+         var req = URLRequest(url: url)
+         req.cachePolicy = .reloadIgnoringLocalCacheData
+@@ -45,6 +46,7 @@ final class UpdateChecker: ObservableObject {
+
+         latestVersion = latest
+         showBanner = Self.isNewer(latest, than: currentVersion)
++        #endif
+     }
+
+     /// "v1.5.3" → "1.5.3". Nil for an empty tag.
+diff --git a/project.yml b/project.yml
+index c5e1ba3..fc5d678 100644
+--- a/project.yml
++++ b/project.yml
+@@ -1,85 +1,44 @@
+ name: SideInstaller
+ options:
+-  # Brand reverse-DNS prefix. NOTE: this is a chosen handle only — it is NOT
+-  # tied to an Apple Developer account (DEVELOPMENT_TEAM stays empty below).
+   bundleIdPrefix: com.frizzle
+-  # iOS 27 is what pairs itself; 17.4 is what the rest of the pipeline needs
+-  # (CoreDeviceProxy over LocalDevVPN, and the Rust core's minos), and an older
+-  # iPhone gets there by importing a pairing file made on a computer.
+   deploymentTarget:
+-    iOS: "17.4"
++    iOS: '17.4'
+   createIntermediateGroups: true
+-
+ settings:
+   base:
+-    SWIFT_VERSION: "5.0"
+-    MARKETING_VERSION: "0.9.0"
+-    CURRENT_PROJECT_VERSION: "1"
+-    TARGETED_DEVICE_FAMILY: "1,2"
+-    # aws-lc-rs / idevice are arm64-only here; drop x86_64 sim slice.
++    SWIFT_VERSION: '5.0'
++    MARKETING_VERSION: 0.9.0
++    CURRENT_PROJECT_VERSION: '1'
++    TARGETED_DEVICE_FAMILY: 1,2
+     EXCLUDED_ARCHS[sdk=iphonesimulator*]: x86_64
+-    # Distribution hygiene: NO team is pinned. Whoever builds this must select
+-    # their OWN signing team in Xcode (Signing & Capabilities), which signs the
+-    # app with their account — never the original author's. Leave empty.
+     CODE_SIGN_STYLE: Automatic
+-    DEVELOPMENT_TEAM: ""
+-
++    DEVELOPMENT_TEAM: ''
+ targets:
+   SideInstaller:
+     type: application
+     platform: iOS
+     sources:
+-      - path: ios-app
++    - path: ios-app
+     dependencies:
+-      - framework: SideInstallerFFI.xcframework
+-        embed: false
+-      # Embedded as PlugIns/SideInstallerLiveActivity.appex.
+-      - target: SideInstallerLiveActivity
++    - framework: SideInstallerFFI.xcframework
++      embed: false
++    - target: SideInstallerLiveActivity
+     settings:
+       base:
+         PRODUCT_BUNDLE_IDENTIFIER: com.frizzle.sideinstaller
+         INFOPLIST_FILE: ios-app/Info.plist
+-        # idevice's static lib pulls in C++ symbols (aws-lc); link libc++.
+-        OTHER_LDFLAGS: "-lc++"
+-        GENERATE_INFOPLIST_FILE: NO
+-    # `xcodebuild test -scheme SideInstaller` runs SideInstallerTests too. A
+-    # build or archive of the scheme still builds the app alone.
+-    scheme:
+-      testTargets:
+-        - SideInstallerTests
+-
+-  # Unit tests (Swift Testing), run inside the app on a simulator, so they can
+-  # reach its internal types with `@testable import SideInstaller`.
+-  # scripts/check-ios.sh builds and runs them, as the pull-request workflow does.
+-  SideInstallerTests:
+-    type: bundle.unit-test
+-    platform: iOS
+-    sources:
+-      - path: ios-tests
+-    dependencies:
+-      - target: SideInstaller
+-    settings:
+-      base:
+-        PRODUCT_BUNDLE_IDENTIFIER: com.frizzle.sideinstaller.tests
+-        GENERATE_INFOPLIST_FILE: YES
+-
+-  # Draws the pairing Live Activity: the code Settings asks for, in the Dynamic
+-  # Island and on the Lock Screen. A Live Activity's views have to live in a
+-  # widget extension; the app starts and updates it (PairingLiveActivity.swift).
+-  # Also draws an install's progress below iOS 26 (InstallActivity.swift).
++        OTHER_LDFLAGS: -lc++
++        GENERATE_INFOPLIST_FILE: false
+   SideInstallerLiveActivity:
+     type: app-extension
+     platform: iOS
+     sources:
+-      - path: ios-live-activity
+-      # What the activities show, shared with the app.
+-      - path: ios-app/PairingActivityAttributes.swift
+-      - path: ios-app/InstallActivityAttributes.swift
++    - path: ios-live-activity
++    - path: ios-app/PairingActivityAttributes.swift
++    - path: ios-app/InstallActivityAttributes.swift
+     settings:
+       base:
+-        # Has to stay the app's identifier plus a suffix, or iOS refuses to
+-        # install the app. Change both together.
+         PRODUCT_BUNDLE_IDENTIFIER: com.frizzle.sideinstaller.LiveActivity
+         INFOPLIST_FILE: ios-live-activity/Info.plist
+-        GENERATE_INFOPLIST_FILE: NO
+-        SKIP_INSTALL: YES
++        GENERATE_INFOPLIST_FILE: false
++        SKIP_INSTALL: true
+diff --git a/rust-core/vendor/isideload/src/sideload/sign.rs b/rust-core/vendor/isideload/src/sideload/sign.rs
+index 1f4934a..0e4440e 100644
+--- a/rust-core/vendor/isideload/src/sideload/sign.rs
++++ b/rust-core/vendor/isideload/src/sideload/sign.rs
+@@ -44,7 +44,9 @@ pub fn sign(
+         certificate_chain,
+     );
+
+-    let entitlements = entitlements(&profile, special, team);
++    let embedded_host = app.bundle.app_info.get("SIEmbeddedBuild").and_then(plist::Value::as_boolean) == Some(true)
++        && app.bundle.bundle_identifier() == Some(format!("com.aault.livecontainer.sideinstaller.{}", team.team_id).as_str());
++    let entitlements = entitlements(&profile, special, team, embedded_host);
+
+     clear_old_signatures(app)?;
+
+@@ -114,25 +116,36 @@ fn entitlements(
+     profile: &ProvisioningProfile,
+     special: &Option<SpecialApp>,
+     team: &DeveloperTeam,
++    embedded_host: bool,
+ ) -> Dictionary {
+     let mut entitlements = profile.entitlements().clone();
+
+     if matches!(
+         special,
+         Some(SpecialApp::SideStoreLc) | Some(SpecialApp::LiveContainer)
+-    ) {
++    ) || embedded_host {
++        let prefix = if embedded_host { "com.aault.livecontainer.sideinstaller.shared" }
++                     else { "com.kdt.livecontainer.shared" };
+         let mut keychain_access = vec![plist::Value::String(format!(
+-            "{}.com.kdt.livecontainer.shared",
+-            team.team_id
++            "{}.{}",
++            team.team_id, prefix
+         ))];
+
+         for number in 1..128 {
+             keychain_access.push(plist::Value::String(format!(
+-                "{}.com.kdt.livecontainer.shared.{}",
+-                team.team_id, number
++                "{}.{}.{}",
++                team.team_id, prefix, number
+             )));
+         }
+
++        if embedded_host {
++            // Preserve items a sideloader put in this host's own default group.
++            // Never add stock LC's groups or a wildcard to the isolated host.
++            if let Some(app_id) = entitlements.get("application-identifier").and_then(plist::Value::as_string) {
++                keychain_access.push(plist::Value::String(app_id.to_owned()));
++            }
++        }
++
+         entitlements.insert(
+             "keychain-access-groups".to_string(),
+             plist::Value::Array(keychain_access),

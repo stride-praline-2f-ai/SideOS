@@ -1,0 +1,327 @@
+name: SideOS3 Device IPA
+
+# Native builds are explicit release requests, never ordinary edit pushes.
+on:
+  push:
+    branches: ['ipa/device']
+    tags: ['ipa-*']
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: Native iOS 27 SDK runner
+        type: choice
+        default: xcode-27
+        options: [xcode-27]
+
+permissions:
+  contents: read
+  actions: read
+
+# Finish the running IPA. GitHub keeps only the newest pending request.
+concurrency:
+  group: tahoe-ipa-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  reuse:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      reused: ${{ steps.artifact.outputs.reused }}
+      artifact_url: ${{ steps.artifact.outputs.artifact_url }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          sparse-checkout: tools/reuse-device-ipa.cjs
+          sparse-checkout-cone-mode: false
+      - name: Reuse an existing verified IPA for this exact source
+        id: artifact
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            const reuse = require('./tools/reuse-device-ipa.cjs');
+            await reuse({github, context, core});
+  core:
+    needs: reuse
+    if: needs.reuse.outputs.reused != 'true'
+    uses: ./.github/workflows/checks.yml
+  combined:
+    needs: [reuse, core]
+    if: needs.reuse.outputs.reused != 'true'
+    runs-on: ${{ inputs.runner || 'xcode-27' }}
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: engine
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: desktop-source
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: aaULTra/SideContainer
+          ref: aae7636f8adeca919fb11f445e8ecb849dc52f7d
+          path: engine
+          sparse-checkout: |
+            ios-app
+            ios-live-activity
+            rust-core
+            embedded
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: LiveContainer/LiveContainer
+          ref: 9d6ea09b05afa2c8fc537c372795a294db631311
+          submodules: recursive
+          path: engine/vendor-livecontainer
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: StikDebug/StikJIT
+          ref: 32287268fa5824f9edce4cb359f5833ce0cf7b00
+          path: engine/vendor-stikjit
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: LiveContainer/dylibify
+          ref: 5daf713df9fb07724510490c88aa8e00061be14a
+          path: engine/vendor-dylibify
+      - name: Select the native iOS SDK
+        run: bash ../desktop-source/tools/select-xcode.sh
+      - name: Ensure the Metal compiler is installed
+        run: |
+          if ! xcrun --sdk iphoneos metal --version; then
+            xcodebuild -downloadComponent MetalToolchain
+            xcrun --sdk iphoneos metal --version
+          fi
+      - name: Install tools and overlay private source
+        run: |
+          brew install xcodegen ldid
+          python3 -m pip install --break-system-packages pyyaml
+          python3 ../desktop-source/tools/overlay-engine.py .
+      - name: Fingerprint native toolchain
+        id: toolchain
+        run: |
+          python3 - <<'PYTOOLCHAIN'
+          import hashlib, os, subprocess
+          commands = [['xcodebuild', '-version'], ['xcrun', '--sdk', 'iphoneos', '--show-sdk-version'], ['rustc', '-vV'], ['xcodegen', '--version'], ['python3', '-c', 'import sys,yaml; print(sys.version); print(yaml.__version__)']]
+          identity = b'\n'.join(subprocess.check_output(command) for command in commands)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('id=' + hashlib.sha256(identity).hexdigest()[:24] + '\n')
+          PYTOOLCHAIN
+      - name: Adapt the pinned host and embedded installer
+        run: |
+          python3 -m unittest discover -s embedded -p 'test_*.py' -v
+          python3 embedded/prepare_livecontainer.py vendor-livecontainer --tahoe
+          swiftc ios-app/JITPairingStore.swift embedded/jit/PairingStoreTests.swift -o /tmp/si-pairing-store-tests
+          /tmp/si-pairing-store-tests
+          swiftc embedded/jit/Messages.swift embedded/jit/PreparationTests.swift -o /tmp/si-jit-preparation-tests
+          /tmp/si-jit-preparation-tests
+          swiftc embedded/jit/HostContext.swift embedded/jit/HostContextTests.swift -o /tmp/si-jit-host-context-tests
+          env LC_HOME_PATH=/tmp/livecontainer-host /tmp/si-jit-host-context-tests
+          swiftc -D SIDEINSTALLER_EMBEDDED ios-app/EmbeddedSigningIdentity.swift embedded/IdentityTests.swift -o /tmp/si-identity-tests
+          /tmp/si-identity-tests
+          openssl req -x509 -newkey rsa:2048 -nodes -subj '/CN=Signing Fixture/OU=ABCDEFGHIJ' -days 1 -keyout /tmp/si-fixture.key -out /tmp/si-fixture.crt
+          openssl pkcs12 -export -inkey /tmp/si-fixture.key -in /tmp/si-fixture.crt -out /tmp/si-fixture.p12 -passout pass:fixture -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1
+          clang -fobjc-arc -fblocks -framework Foundation -framework Security embedded/SigningSetupTests.m -o /tmp/si-activation-tests
+          /tmp/si-activation-tests /tmp/si-fixture.p12
+          rm /tmp/si-fixture.key /tmp/si-fixture.crt /tmp/si-fixture.p12
+          python3 - <<'PY'
+          import yaml
+          from pathlib import Path
+          path=Path('project.yml')
+          project=yaml.safe_load(path.read_text())
+          target=project['targets']['SideInstaller']
+          target['sources'].append({'path':'embedded/Runtime.m'})
+          target['settings']['base']['SWIFT_ACTIVE_COMPILATION_CONDITIONS']='$(inherited) SIDEINSTALLER_EMBEDDED'
+          target['settings']['base']['SWIFT_OBJC_BRIDGING_HEADER']='embedded/Runtime.h'
+          path.write_text(yaml.safe_dump(project,sort_keys=False))
+          PY
+      - name: Verify signed adapter policy with CryptoKit
+        run: |
+          swiftc ../desktop-source/embedded/tahoe/AdapterSignature.swift ../desktop-source/embedded/tahoe/AdapterSignatureTests.swift -o /tmp/sideos-adapter-signature-tests
+          /tmp/sideos-adapter-signature-tests
+      - name: Fingerprint executable device build recipes
+        id: recipes
+        run: python3 ../desktop-source/tools/device-recipe-fingerprints.py ../desktop-source/.github/workflows/private-build.yml >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        id: host-cache
+        with:
+          path: |
+            engine/build-embedded-lc/Build/Products/Release-iphoneos/LiveContainer.app
+            engine/sideos-host-warnings.json
+          key: sideos3-host-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-${{ steps.recipes.outputs.host }}-${{ hashFiles('desktop-source/Engine.lock.json', 'desktop-source/tools/device-recipe-fingerprints.py', 'desktop-source/tools/select-xcode.sh', 'desktop-source/tools/overlay-engine.py', 'desktop-source/embedded/prepare_livecontainer.py', 'desktop-source/tools/check-host-warnings.py', 'desktop-source/embedded/tahoe/**', '!desktop-source/embedded/tahoe/preview/**', '!desktop-source/embedded/tahoe/*Tests.swift', '!desktop-source/embedded/tahoe/README.md', '!desktop-source/embedded/tahoe/**/__pycache__/**') }}
+      - name: Check the native display codec without a simulator
+        run: |
+          swiftc -parse-as-library embedded/tahoe/DisplayProtocol.swift embedded/tahoe/DisplayVideo.swift embedded/tahoe/DisplayVideoTests.swift -o "$RUNNER_TEMP/sideos-display-codec-check"
+          "$RUNNER_TEMP/sideos-display-codec-check"
+      - name: Check encrypted display pairing and input rejection
+        run: |
+          swiftc -parse-as-library embedded/tahoe/DisplayProtocol.swift embedded/tahoe/DisplayTransport.swift embedded/tahoe/DisplayTransportTests.swift -o "$RUNNER_TEMP/sideos-display-network-check"
+          "$RUNNER_TEMP/sideos-display-network-check"
+      - name: Build the desktop host and runtime
+        if: steps.host-cache.outputs.cache-hit != 'true'
+        run: |
+          set -o pipefail
+          xcodebuild -project vendor-livecontainer/LiveContainer.xcodeproj -scheme LiveContainer \
+            -configuration Release -sdk iphoneos -arch arm64 \
+            -derivedDataPath build-embedded-lc IPHONEOS_DEPLOYMENT_TARGET=17.5 \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO DEVELOPMENT_TEAM= \
+            build 2>&1 | tee embedded-host.log
+      - name: Enforce the desktop compiler warning budget
+        run: python3 ../desktop-source/tools/check-host-warnings.py --log embedded-host.log --summary sideos-host-warnings.json
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        if: steps.host-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            engine/build-embedded-lc/Build/Products/Release-iphoneos/LiveContainer.app
+            engine/sideos-host-warnings.json
+          key: ${{ steps.host-cache.outputs.cache-primary-key }}
+      - name: Adapt JIT helper source
+        run: |
+          python3 embedded/build_jit.py vendor-stikjit
+          python3 embedded/check_script_runner.py vendor-stikjit
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        id: jit-cache
+        with:
+          path: engine/build-embedded-jit/Build/Products/Release-iphoneos
+          key: sideos3-jit-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-${{ steps.recipes.outputs.jit }}-${{ hashFiles('desktop-source/Engine.lock.json', 'desktop-source/tools/device-recipe-fingerprints.py', 'desktop-source/tools/select-xcode.sh', 'desktop-source/tools/overlay-engine.py') }}
+      - name: Build JIT helper
+        if: steps.jit-cache.outputs.cache-hit != 'true'
+        run: |
+          set -o pipefail
+          xcodegen generate --spec vendor-stikjit/project.yml --project vendor-stikjit
+          xcodebuild -project vendor-stikjit/StikJIT.xcodeproj -scheme SIJITHelper \
+            -configuration Release -sdk iphoneos -arch arm64 -derivedDataPath build-embedded-jit \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO DEVELOPMENT_TEAM= \
+            build 2>&1 | tee embedded-jit.log
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        if: steps.jit-cache.outputs.cache-hit != 'true'
+        with:
+          path: engine/build-embedded-jit/Build/Products/Release-iphoneos
+          key: ${{ steps.jit-cache.outputs.cache-primary-key }}
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: FrizzleM/SideInstaller
+          ref: 50b2a0dea22d43659e2630e01daa9097145874cb
+          path: installer-source
+          sparse-checkout: |
+            ios-app
+            ios-live-activity
+            rust-core
+      - name: Integrate the pinned SideInstaller 2.0.1
+        run: python3 ../desktop-source/tools/update-installer.py . ../installer-source
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        id: ffi-cache
+        with:
+          path: engine/SideInstallerFFI.xcframework
+          key: sideos3-device-ffi-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-${{ steps.recipes.outputs.ffi }}-${{ hashFiles('desktop-source/Engine.lock.json', 'desktop-source/tools/device-recipe-fingerprints.py', 'desktop-source/tools/select-xcode.sh', 'desktop-source/tools/overlay-engine.py', 'desktop-source/build-rust.sh', 'engine/rust-core/**', '!engine/rust-core/target/**') }}
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        if: steps.ffi-cache.outputs.cache-hit != 'true'
+        id: cargo-cache
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            engine/rust-core/target/aarch64-apple-ios
+            engine/rust-core/target/release
+          key: sideos3-cargo-device-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-${{ hashFiles('engine/rust-core/**', '!engine/rust-core/target/**', 'desktop-source/build-rust.sh') }}
+          restore-keys: |
+            sideos3-cargo-device-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-
+            tahoe-rust-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('engine/rust-core/Cargo.lock', 'engine/rust-core/Cargo.toml', 'engine/rust-core/vendor/**/Cargo.toml') }}
+      - name: Build device Rust FFI only when inputs change
+        if: steps.ffi-cache.outputs.cache-hit != 'true'
+        run: |
+          set -o pipefail
+          rustup target add aarch64-apple-ios
+          bash build-rust.sh --device-only 2>&1 | tee embedded-rust.log
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        if: steps.ffi-cache.outputs.cache-hit != 'true'
+        with:
+          path: engine/SideInstallerFFI.xcframework
+          key: ${{ steps.ffi-cache.outputs.cache-primary-key }}
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        if: steps.ffi-cache.outputs.cache-hit != 'true' && steps.cargo-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            engine/rust-core/target/aarch64-apple-ios
+            engine/rust-core/target/release
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
+      - name: Prepare the SideInstaller home dashboard
+        run: python3 ../desktop-source/embedded/installer/patch.py .
+      - name: Protect the installed SideOS source during refresh
+        run: python3 ../desktop-source/tools/guard-host-refresh.py .
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        id: guest-cache
+        with:
+          path: engine/build-embedded-si/Build/Products/Release-iphoneos/SideInstaller.app
+          key: sideos3-guest-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-${{ steps.recipes.outputs.guest }}-${{ hashFiles('desktop-source/Engine.lock.json', 'desktop-source/tools/device-recipe-fingerprints.py', 'desktop-source/tools/select-xcode.sh', 'desktop-source/tools/overlay-engine.py', 'desktop-source/embedded/prepare_livecontainer.py', 'desktop-source/build-rust.sh', 'engine/ios-app/**', 'engine/ios-live-activity/**', 'engine/embedded/Runtime.*', 'engine/project.yml', 'engine/rust-core/**', '!engine/rust-core/target/**') }}
+      - name: Build the embedded installer only when inputs change
+        if: steps.guest-cache.outputs.cache-hit != 'true'
+        run: |
+          set -o pipefail
+          xcodegen generate
+          xcodebuild -project SideInstaller.xcodeproj -scheme SideInstaller \
+            -configuration Release -destination 'generic/platform=iOS' \
+            -derivedDataPath build-embedded-si MARKETING_VERSION=2.0.1 \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build 2>&1 | tee embedded-guest.log
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        if: steps.guest-cache.outputs.cache-hit != 'true'
+        with:
+          path: engine/build-embedded-si/Build/Products/Release-iphoneos/SideInstaller.app
+          key: ${{ steps.guest-cache.outputs.cache-primary-key }}
+      - name: Package and verify the unsigned IPA
+        env:
+          SI_SOURCE_REVISION: ${{ github.sha }}
+          SI_SOURCE_REPOSITORY: ${{ github.repository }}
+          SI_BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          export SI_INSTALLER_REVISION="$(git -C ../installer-source rev-parse HEAD)"
+          export SI_INSTALLER_VERSION="$(python3 -c 'import json; print(json.load(open("../desktop-source/Installer.lock.json"))["version"])')"
+          export SI_LIVECONTAINER_REVISION="$(git -C vendor-livecontainer rev-parse HEAD)"
+          export SI_LIVECONTAINER_RELEASE="$(python3 -c 'import json; print(json.load(open("../desktop-source/Engine.lock.json"))["livecontainerRelease"])')"
+          xcrun --sdk macosx clang vendor-dylibify/main.m -framework Foundation -fobjc-arc -o dylibify
+          python3 embedded/package.py \
+            --host build-embedded-lc/Build/Products/Release-iphoneos/LiveContainer.app \
+            --guest build-embedded-si/Build/Products/Release-iphoneos/SideInstaller.app \
+            --dylibify dylibify --upstream vendor-livecontainer --output combined-output \
+            --jit-products build-embedded-jit/Build/Products/Release-iphoneos --jit-source vendor-stikjit
+          python3 ../desktop-source/tools/release-safety.py --ipa combined-output/SideOS3-*-unsigned.ipa
+          python3 - <<'PYSAFETY'
+          import json
+          from pathlib import Path
+          path = Path('combined-output/verification.json')
+          report = json.loads(path.read_text())
+          report['artifactPrivacyVerified'] = True
+          path.write_text(json.dumps(report, indent=2) + '\n')
+          PYSAFETY
+      - name: Upload verified device IPA
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: SideOS3-Device-IPA
+          retention-days: 14
+          compression-level: 0
+          if-no-files-found: error
+          path: |
+            engine/combined-output/SideOS3-*-unsigned.ipa
+            engine/combined-output/verification.json
+            engine/combined-output/release.json
+      - name: Summarize reusable build products
+        if: always()
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            await core.summary.addHeading('Device-only build and cache use').addTable([
+              [{data:'Product',header:true},{data:'Exact cache hit',header:true}],
+              ['Desktop','${{ steps.host-cache.outputs.cache-hit }}'],
+              ['JIT helper','${{ steps.jit-cache.outputs.cache-hit }}'],
+              ['Rust device library','${{ steps.ffi-cache.outputs.cache-hit }}'],
+              ['Installer','${{ steps.guest-cache.outputs.cache-hit }}']
+            ]).addRaw('\nStandard Mac runner reference price: $0.062/minute, rounded per job. This is not an account billing statement. Signing is not required for these unsigned IPAs.\n').write();
+      - name: Retain diagnostic logs only on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: SideOS3-Build-Logs
+          retention-days: 3
+          if-no-files-found: ignore
+          path: engine/embedded-*.log

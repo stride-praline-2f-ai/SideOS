@@ -1,0 +1,1 @@
+Four proof comparisons explicitly compare byte slices using the existing subtle constant-time equality implementation. This preserves proof checks with the updated hybrid-array dependency. Original MIT/Apache-2.0 notices and protocol tests are retained.

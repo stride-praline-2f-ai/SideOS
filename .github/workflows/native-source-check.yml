@@ -1,0 +1,169 @@
+# Compile validation only: no IPA, simulator, preview, release or binary artifact.
+name: SideOS Native Source Check
+'on':
+  push:
+    branches:
+    - validation/native
+  workflow_dispatch: {}
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: sideos-native-source-${{ github.repository }}
+  cancel-in-progress: false
+jobs:
+  checks:
+    uses: ./.github/workflows/checks.yml
+  host:
+    needs: checks
+    runs-on: xcode-27
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: engine
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      with:
+        path: desktop-source
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      with:
+        repository: aaULTra/SideContainer
+        ref: aae7636f8adeca919fb11f445e8ecb849dc52f7d
+        path: engine
+        sparse-checkout: 'ios-app
+
+          ios-live-activity
+
+          rust-core
+
+          embedded
+
+          '
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      with:
+        repository: LiveContainer/LiveContainer
+        ref: 9d6ea09b05afa2c8fc537c372795a294db631311
+        submodules: recursive
+        path: engine/vendor-livecontainer
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      with:
+        repository: StikDebug/StikJIT
+        ref: 32287268fa5824f9edce4cb359f5833ce0cf7b00
+        path: engine/vendor-stikjit
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      with:
+        repository: LiveContainer/dylibify
+        ref: 5daf713df9fb07724510490c88aa8e00061be14a
+        path: engine/vendor-dylibify
+    - name: Select the native iOS SDK
+      run: bash ../desktop-source/tools/select-xcode.sh
+    - name: Ensure the Metal compiler is installed
+      run: "if ! xcrun --sdk iphoneos metal --version; then\n  xcodebuild -downloadComponent MetalToolchain\n  xcrun --sdk iphoneos metal --version\n\
+        fi\n"
+    - name: Install tools and overlay private source
+      run: 'brew install xcodegen ldid
+
+        python3 -m pip install --break-system-packages pyyaml
+
+        python3 ../desktop-source/tools/overlay-engine.py .
+
+        '
+    - name: Fingerprint native toolchain
+      id: toolchain
+      run: "python3 - <<'PYTOOLCHAIN'\nimport hashlib, os, subprocess\ncommands = [['xcodebuild', '-version'], ['xcrun', '--sdk', 'iphoneos',\
+        \ '--show-sdk-version'], ['rustc', '-vV'], ['xcodegen', '--version'], ['python3', '-c', 'import sys,yaml; print(sys.version); print(yaml.__version__)']]\n\
+        identity = b'\\n'.join(subprocess.check_output(command) for command in commands)\nwith open(os.environ['GITHUB_OUTPUT'], 'a') as output:\n\
+        \    output.write('id=' + hashlib.sha256(identity).hexdigest()[:24] + '\\n')\nPYTOOLCHAIN\n"
+    - name: Adapt the pinned host and embedded installer
+      run: 'python3 -m unittest discover -s embedded -p ''test_*.py'' -v
+
+        python3 embedded/prepare_livecontainer.py vendor-livecontainer --tahoe
+
+        swiftc ios-app/JITPairingStore.swift embedded/jit/PairingStoreTests.swift -o /tmp/si-pairing-store-tests
+
+        /tmp/si-pairing-store-tests
+
+        swiftc embedded/jit/Messages.swift embedded/jit/PreparationTests.swift -o /tmp/si-jit-preparation-tests
+
+        /tmp/si-jit-preparation-tests
+
+        swiftc embedded/jit/HostContext.swift embedded/jit/HostContextTests.swift -o /tmp/si-jit-host-context-tests
+
+        env LC_HOME_PATH=/tmp/livecontainer-host /tmp/si-jit-host-context-tests
+
+        swiftc -D SIDEINSTALLER_EMBEDDED ios-app/EmbeddedSigningIdentity.swift embedded/IdentityTests.swift -o /tmp/si-identity-tests
+
+        /tmp/si-identity-tests
+
+        openssl req -x509 -newkey rsa:2048 -nodes -subj ''/CN=Signing Fixture/OU=ABCDEFGHIJ'' -days 1 -keyout /tmp/si-fixture.key -out /tmp/si-fixture.crt
+
+        openssl pkcs12 -export -inkey /tmp/si-fixture.key -in /tmp/si-fixture.crt -out /tmp/si-fixture.p12 -passout pass:fixture -keypbe PBE-SHA1-3DES
+        -certpbe PBE-SHA1-3DES -macalg sha1
+
+        clang -fobjc-arc -fblocks -framework Foundation -framework Security embedded/SigningSetupTests.m -o /tmp/si-activation-tests
+
+        /tmp/si-activation-tests /tmp/si-fixture.p12
+
+        rm /tmp/si-fixture.key /tmp/si-fixture.crt /tmp/si-fixture.p12
+
+        python3 - <<''PY''
+
+        import yaml
+
+        from pathlib import Path
+
+        path=Path(''project.yml'')
+
+        project=yaml.safe_load(path.read_text())
+
+        target=project[''targets''][''SideInstaller'']
+
+        target[''sources''].append({''path'':''embedded/Runtime.m''})
+
+        target[''settings''][''base''][''SWIFT_ACTIVE_COMPILATION_CONDITIONS'']=''$(inherited) SIDEINSTALLER_EMBEDDED''
+
+        target[''settings''][''base''][''SWIFT_OBJC_BRIDGING_HEADER'']=''embedded/Runtime.h''
+
+        path.write_text(yaml.safe_dump(project,sort_keys=False))
+
+        PY
+
+        '
+    - name: Verify signed adapter policy with CryptoKit
+      run: 'swiftc ../desktop-source/embedded/tahoe/AdapterSignature.swift ../desktop-source/embedded/tahoe/AdapterSignatureTests.swift -o /tmp/sideos-adapter-signature-tests
+
+        /tmp/sideos-adapter-signature-tests
+
+        '
+    - name: Fingerprint executable device build recipes
+      id: recipes
+      run: python3 ../desktop-source/tools/device-recipe-fingerprints.py ../desktop-source/.github/workflows/private-build.yml >> "$GITHUB_OUTPUT"
+    - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      id: host-cache
+      with:
+        path: 'engine/build-embedded-lc/Build/Products/Release-iphoneos/LiveContainer.app
+
+          engine/sideos-host-warnings.json
+
+          '
+        key: sideos3-host-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-${{ steps.recipes.outputs.host }}-${{ hashFiles('desktop-source/Engine.lock.json',
+          'desktop-source/tools/device-recipe-fingerprints.py', 'desktop-source/tools/select-xcode.sh', 'desktop-source/tools/overlay-engine.py',
+          'desktop-source/embedded/prepare_livecontainer.py', 'desktop-source/tools/check-host-warnings.py', 'desktop-source/embedded/tahoe/**',
+          '!desktop-source/embedded/tahoe/preview/**', '!desktop-source/embedded/tahoe/*Tests.swift', '!desktop-source/embedded/tahoe/README.md',
+          '!desktop-source/embedded/tahoe/**/__pycache__/**') }}
+    - name: Build the desktop host and runtime
+      if: steps.host-cache.outputs.cache-hit != 'true'
+      run: "set -o pipefail\nxcodebuild -project vendor-livecontainer/LiveContainer.xcodeproj -scheme LiveContainer \\\n  -configuration Release\
+        \ -sdk iphoneos -arch arm64 \\\n  -derivedDataPath build-embedded-lc IPHONEOS_DEPLOYMENT_TARGET=17.5 \\\n  CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO\
+        \ DEVELOPMENT_TEAM= \\\n  build 2>&1 | tee embedded-host.log\n"
+    - name: Enforce the desktop compiler warning budget
+      run: python3 ../desktop-source/tools/check-host-warnings.py --log embedded-host.log --summary sideos-host-warnings.json
+    - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      if: steps.host-cache.outputs.cache-hit != 'true'
+      with:
+        path: 'engine/build-embedded-lc/Build/Products/Release-iphoneos/LiveContainer.app
+
+          engine/sideos-host-warnings.json
+
+          '
+        key: ${{ steps.host-cache.outputs.cache-primary-key }}

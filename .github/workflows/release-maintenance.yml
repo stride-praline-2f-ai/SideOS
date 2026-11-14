@@ -1,0 +1,25 @@
+name: Maintain SideOS release provenance
+on:
+  push:
+    branches: ['release/maintenance']
+    paths: ['.github/maintenance-request.json', '.github/workflows/release-maintenance.yml', 'tools/release-maintenance.cjs']
+permissions:
+  contents: write
+  actions: write
+concurrency:
+  group: sideos-release-maintenance
+  cancel-in-progress: false
+jobs:
+  maintain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Check source replacement safeguards
+        run: node tools/test-release-maintenance.cjs
+      - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            await require('./tools/release-maintenance.cjs')({github, context, core});

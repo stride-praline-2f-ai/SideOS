@@ -1,0 +1,1788 @@
+[
+  {
+    "id": "R001",
+    "domain": "Session safety and browser lifecycle",
+    "priority": "P1",
+    "kind": "Confirmed",
+    "effort": "M",
+    "title": "Protect drafts through every close route",
+    "finding": "Closing one inner chat checks draft/generating status, but closing its outer browser tab or window, or leaving the workspace, can release the same pages without that aggregate check.",
+    "recommendation": "Use one asynchronous close/leave decision for chat, tab, window, integration toggle and navigation. Ask once for the affected pages. Preserve the existing rule that chat text is not collected through the bridge.",
+    "validation": "Exercise each exit route with a draft, a streaming response, a clean chat and a cancelled confirmation.",
+    "sources": [
+      "embedded/tahoe/ChatWorkspace.swift",
+      "embedded/tahoe/Browser.swift",
+      "embedded/tahoe/Workspace.swift"
+    ]
+  },
+  {
+    "id": "R002",
+    "domain": "Session safety and browser lifecycle",
+    "priority": "P1",
+    "kind": "Confirmed",
+    "effort": "M",
+    "title": "Stop silently dropping oversized restored sessions",
+    "finding": "Ordinary browser restore takes the first 20 URLs, window restoration takes 40 windows, and a saved chat workspace exceeding 200 URLs is rejected. Creation and saving do not consistently enforce the corresponding limits.",
+    "recommendation": "Keep overflow URLs in a recoverable archive or enforce an explicit creation limit. Restore the selected item and window-to-session mapping deterministically; show the user when part of a session is deferred.",
+    "validation": "Round-trip 21 tabs, 41 windows and 201 chats, including a selected item outside the first range, without silently losing addresses.",
+    "sources": [
+      "embedded/tahoe/Browser.swift",
+      "embedded/tahoe/WindowState.swift",
+      "embedded/tahoe/Workspace.swift",
+      "embedded/tahoe/ChatWorkspaceState.swift"
+    ]
+  },
+  {
+    "id": "R003",
+    "domain": "Session safety and browser lifecycle",
+    "priority": "P1",
+    "kind": "Confirmed",
+    "effort": "L",
+    "title": "Separate restore concurrency from resident-page memory",
+    "finding": "The new queue caps simultaneous restoration starts at two. Hidden loaded WKWebViews are still retained, and there is no measured resident-page budget or memory-pressure/thermal policy.",
+    "recommendation": "Introduce active, protected-background and safely-suspendable page states. Back off queued work on pressure, and only unload eligible pages. Protect drafts, active media, uploads, downloads and streaming chats.",
+    "validation": "Measure physical-device memory and process terminations at increasing tab counts. Verify that pressure recovery never destroys a protected page or starts a reload loop.",
+    "sources": [
+      "embedded/tahoe/PageRestoration.swift",
+      "embedded/tahoe/Browser.swift",
+      "embedded/tahoe/ChatWorkspace.swift"
+    ]
+  },
+  {
+    "id": "R004",
+    "domain": "Session safety and browser lifecycle",
+    "priority": "P1",
+    "kind": "Confirmed",
+    "effort": "M",
+    "title": "Give persistence a recovery path",
+    "finding": "Atomic writes protect against a partially written single file, but session/preferences storage has no last-known-good snapshot or explicit migration/recovery workflow. Decode failures can fall back to defaults.",
+    "recommendation": "Add versioned migration, a bounded previous snapshot, and a recover/reset choice. Move serialization and disk work off the main actor using immutable snapshots and ordered writes.",
+    "validation": "Load older, truncated, unknown-version and partially malformed fixtures; interrupt saving; ensure recovery preserves the last useful session and does not resurrect Private pages.",
+    "sources": [
+      "embedded/tahoe/Persistence.swift",
+      "embedded/tahoe/Preferences.swift",
+      "embedded/tahoe/Workspace.swift"
+    ]
+  },
+  {
+    "id": "R005",
+    "domain": "Session safety and browser lifecycle",
+    "priority": "P2",
+    "kind": "Confirmed",
+    "effort": "M",
+    "title": "Restore profiles deliberately",
+    "finding": "Saved browser entries contain addresses and selection but no profile identity. Personal URLs are persisted while Work URLs are excluded; a restored window can retain a Work-looking title while becoming Personal. Private-only windows can return as default Personal windows.",
+    "recommendation": "Save an explicit restorable profile ID, offer opt-in Work session restoration, and omit Private-only windows. Keep the already separate website data stores separate.",
+    "validation": "Restart mixed Personal/Work/Private windows and verify title, selected profile, addresses and cookie-store identity. This is a restoration mismatch, not evidence of cookie leakage.",
+    "sources": [
+      "embedded/tahoe/Persistence.swift",
+      "embedded/tahoe/Workspace.swift",
+      "embedded/tahoe/Browser.swift"
+    ]
+  },
+  {
+    "id": "R006",
+    "domain": "Session safety and browser lifecycle",
+    "priority": "P2",
+    "kind": "Addition",
+    "effort": "M",
+    "title": "Provide session recovery and closed-browser-tab history",
+    "finding": "Inner chats have reopening support, but outer browser tabs do not have an equivalent durable, discoverable recovery history.",
+    "recommendation": "Add Reopen Closed Tab, recently closed windows and a URL/layout-only recovery panel. Bound retention, exclude Private browsing and make Clear History understandable.",
+    "validation": "Recover a closed multi-chat tab, a normal tab and an entire window; verify no private addresses or message bodies enter the archive.",
+    "sources": [
+      "embedded/tahoe/Browser.swift",
+      "embedded/tahoe/ChatWorkspaceState.swift",
+      "embedded/tahoe/Persistence.swift"
+    ]
+  },
+  {
+    "id": "R007",
+    "domain": "Session safety and browser lifecycle",
+    "priority": "P2",
+    "kind": "Addition",
+    "effort": "M",
+    "title": "Persist stable tab metadata",
+    "finding": "Browser snapshots do not preserve stable outer-tab identity, per-tab zoom or a fuller set of presentation metadata.",
+    "recommendation": "Introduce a versioned tab descriptor for URL, profile, stable ID and user-controlled zoom/pinning. Keep transient WebKit objects and sensitive form contents outside the descriptor.",
+    "validation": "Restart reordered tabs with different zoom levels and ensure restoration and history point at the same logical tabs.",
+    "sources": [
+      "embedded/tahoe/Persistence.swift",
+      "embedded/tahoe/Browser.swift"
+    ]
+  },
+  {
+    "id": "R008",
+    "domain": "Session safety and browser lifecycle",
+    "priority": "P2",
+    "kind": "Addition",
+    "effort": "M",
+    "title": "Show restoration and sleeping states clearly",
+    "finding": "Automatic restoration now works without selection, but users still need to distinguish queued, loading, failed and intentionally unloaded pages.",
+    "recommendation": "Use a small consistent tab status affordance with Retry and Keep Awake actions. Surface one useful failure reason instead of an indefinite spinner or automatic retry storm.",
+    "validation": "Test offline startup, authentication failure, a hung navigation, process termination and background/foreground transitions.",
+    "sources": [
+      "embedded/tahoe/PageRestoration.swift",
+      "embedded/tahoe/Browser.swift",
+      "embedded/tahoe/Tabs.swift"
+    ]
+  },
+  {
+    "id": "R009",
+    "domain": "ChatGPT integration, split view and tab transfers",
+    "priority": "P1",
+    "kind": "Observed",
+    "effort": "M",
+    "title": "Stabilize split-view viewport and composer visibility",
+    "finding": "In the recording around 1:19\u20131:43, the chat row and sidebar top controls scroll away, while composers can move partly below the visible edge during split resizing and typing.",
+    "recommendation": "Choose one viewport owner, anchor the integrated row consistently and account for visualViewport and keyboard changes. Separate website scrolling from workspace chrome.",
+    "validation": "Compare before/after device recordings for split entry, divider dragging, composer focus, long conversations and keyboard dismissal. The recording establishes the symptom, not its exact cause.",
+    "sources": [
+      "embedded/tahoe/ChatGPTPageScript.swift",
+      "embedded/tahoe/ChatWorkspace.swift"
+    ]
+  },
+  {
+    "id": "R010",
+    "domain": "ChatGPT integration, split view and tab transfers",
+    "priority": "P1",
+    "kind": "Confirmed",
+    "effort": "S",
+    "title": "Implement the actual native drag-end callback",
+    "finding": "The UIDragInteraction delegate implements dragInteraction(_:sessionDidEnd:), which is not its required end callback; the native build emits a nearly-matching delegate warning.",
+    "recommendation": "Use dragInteraction(_:session:didEndWith:) and clear transfer state for successful, cancelled and rejected drags. Keep the live page ownership transfer rather than rebuilding it from its URL.",
+    "validation": "Drag out, cancel with Escape, drop back in the source, and drop outside all windows; assert that the next drag starts cleanly.",
+    "sources": [
+      "embedded/tahoe/ChatWorkspace.swift",
+      "embedded/tahoe/BrowserTabTransfer.swift"
+    ]
+  },
+  {
+    "id": "R011",
+    "domain": "ChatGPT integration, split view and tab transfers",
+    "priority": "P2",
+    "kind": "Confirmed",
+    "effort": "S",
+    "title": "Clean up ordinary browser drags on cancellation",
+    "finding": "Outer-tab onDrag/onDrop state is cleared on successful drop, but lacks a reliable matching end/cancel path.",
+    "recommendation": "Give native browser drags the same explicit transfer lifecycle and source token as chat drags.",
+    "validation": "Cancel and reject outer-tab drags repeatedly, then detach another tab; verify no stale source tab is moved.",
+    "sources": [
+      "embedded/tahoe/Tabs.swift",
+      "embedded/tahoe/BrowserTabTransfer.swift"
+    ]
+  },
+  {
+    "id": "R012",
+    "domain": "ChatGPT integration, split view and tab transfers",
+    "priority": "P2",
+    "kind": "Confirmed",
+    "effort": "M",
+    "title": "Refresh pane geometry when the root viewport moves",
+    "finding": "The page adapter listens to resize and the chat-list scroll, but not root/window or visualViewport scrolling. Reported native pane and hit-region rectangles can therefore become stale.",
+    "recommendation": "Coalesce relevant scroll, visualViewport and resize events into one geometry update per frame. Update only when rectangles change.",
+    "validation": "Scroll the root, resize with the keyboard open and drag tabs afterward; native hit regions must remain aligned with their visible controls.",
+    "sources": [
+      "embedded/tahoe/ChatGPTPageScript.swift",
+      "embedded/tahoe/ChatWorkspace.swift"
+    ]
+  },
+  {
+    "id": "R013",
+    "domain": "ChatGPT integration, split view and tab transfers",
+    "priority": "P2",
+    "kind": "Candidate",
+    "effort": "M",
+    "title": "Remove repetitive layout restoration and forced measurement",
+    "finding": "Every layout pass first restores DOM changes and then reapplies them. Input-triggered status calls can enter rendering/layout even when status output is unchanged. This is a credible layout-cost source, not a measured bottleneck yet.",
+    "recommendation": "Profile first; then make style updates idempotent, batch reads before writes, and skip layout when only chat status changes. Keep adapter cleanup reversible.",
+    "validation": "Record layout count, long tasks, typing latency and scroll position on a live page before and after the change.",
+    "sources": [
+      "embedded/tahoe/ChatGPTPageScript.swift",
+      "tools/test-chatgpt-workspace.cjs"
+    ]
+  },
+  {
+    "id": "R014",
+    "domain": "ChatGPT integration, split view and tab transfers",
+    "priority": "P2",
+    "kind": "Addition",
+    "effort": "S",
+    "title": "Expose Chats where users expect it",
+    "finding": "The user previously saw an enabled menu item yet could not tell whether integration was active. The one-chat hidden-row behavior makes that confusion plausible.",
+    "recommendation": "Add the same ChatGPT Chats preference to Browser Settings and a small page-level Chats action/count when on a supported site. Explain when a second chat reveals the row.",
+    "validation": "From a fresh profile, enable the feature, create a second chat and split it without consulting the menu bar or documentation.",
+    "sources": [
+      "embedded/tahoe/Settings.swift",
+      "embedded/tahoe/Browser.swift",
+      "embedded/tahoe/ChatGPTPageScript.swift"
+    ]
+  },
+  {
+    "id": "R015",
+    "domain": "ChatGPT integration, split view and tab transfers",
+    "priority": "P2",
+    "kind": "Observed",
+    "effort": "S",
+    "title": "Use available space for chat titles and focus",
+    "finding": "The recording shows early truncation despite spare row space, and split-pane focus could be more obvious.",
+    "recommendation": "Use bounded flexible tab widths, a full-title tooltip and a restrained focused-pane indicator. Keep inactive labels readable without making every tab look selected.",
+    "validation": "Check short and long titles at narrow and wide widths, with two panes, pointer hover and increased text size.",
+    "sources": [
+      "embedded/tahoe/ChatGPTPageScript.swift",
+      "embedded/tahoe/ChatWorkspace.swift"
+    ]
+  },
+  {
+    "id": "R016",
+    "domain": "ChatGPT integration, split view and tab transfers",
+    "priority": "P2",
+    "kind": "Addition",
+    "effort": "L",
+    "title": "Support moving tabs into existing windows",
+    "finding": "Detaching preserves live page ownership and drafts, but the interaction is oriented toward creating a new window rather than merging into an existing one.",
+    "recommendation": "Add explicit insertion targets for compatible browser/chat bars, with a live insertion preview and cancel-to-origin behavior. Reject profile or workspace combinations that cannot preserve isolation.",
+    "validation": "Move active streams and drafts both ways between windows without reloading, duplication, accidental closure or cross-profile storage reuse.",
+    "sources": [
+      "embedded/tahoe/Workspace.swift",
+      "embedded/tahoe/BrowserTabTransfer.swift",
+      "embedded/tahoe/Tabs.swift",
+      "embedded/tahoe/ChatWorkspace.swift"
+    ]
+  },
+  {
+    "id": "R017",
+    "domain": "ChatGPT integration, split view and tab transfers",
+    "priority": "P2",
+    "kind": "Addition",
+    "effort": "M",
+    "title": "Make split actions visible and reversible",
+    "finding": "Split view and its divider exist, but the context menu carries much of their discoverability.",
+    "recommendation": "Provide compact Split, Swap Panes and Exit Split actions, clear focus, and a usable minimum width. Explain when the window is too narrow instead of silently failing.",
+    "validation": "Complete the same workflow by pointer, touch, keyboard and VoiceOver; closing one pane must retain the intended remaining chat.",
+    "sources": [
+      "embedded/tahoe/ChatWorkspace.swift",
+      "embedded/tahoe/ChatWorkspaceState.swift",
+      "embedded/tahoe/ChatGPTPageScript.swift"
+    ]
+  },
+  {
+    "id": "R018",
+    "domain": "ChatGPT integration, split view and tab transfers",
+    "priority": "P3",
+    "kind": "Addition",
+    "effort": "M",
+    "title": "Offer named chat workspaces and search",
+    "finding": "Multiple chats are supported, but larger research workflows need organization beyond a long row.",
+    "recommendation": "Add optional named workspace sets and a lightweight open-chat switcher. Keep local workspace organization distinct from ChatGPT account-side projects or pinned chats.",
+    "validation": "Restore a named set, locate a chat by title, and verify no message contents are collected merely to implement search.",
+    "sources": [
+      "embedded/tahoe/ChatWorkspaceState.swift",
+      "embedded/tahoe/ChatWorkspace.swift"
+    ]
+  },
+  {
+    "id": "R019",
+    "domain": "ChatGPT integration, split view and tab transfers",
+    "priority": "P2",
+    "kind": "Candidate",
+    "effort": "M",
+    "title": "Test real DOM and layout variants",
+    "finding": "Current jsdom fixtures cover semantic behavior, but mocked rectangles are all 1000\u00d7800 and cannot validate the geometry shown in the recording.",
+    "recommendation": "Add realistic layout fixtures and a cheap headless browser layout suite, plus a small physical-device checklist for the real authenticated site. Include signed-out, collapsed-sidebar and alternate responsive markup.",
+    "validation": "Detect a deliberately scrolled-off chat row and incorrect pane bounds. Keep previews and simulator jobs out of the IPA workflow.",
+    "sources": [
+      "tools/test-chatgpt-workspace.cjs",
+      "tools/web-tests/package.json",
+      "embedded/tahoe/ChatGPTPageScript.swift"
+    ]
+  },
+  {
+    "id": "R020",
+    "domain": "Windows, Spaces and the app bar",
+    "priority": "P2",
+    "kind": "Confirmed",
+    "effort": "S",
+    "title": "Separate browser and standalone-web-app Dock groups",
+    "finding": "Dock browser filtering and activation include all browser-kind windows, including standalone web apps. The browser icon can therefore list or focus a ChatGPT app window.",
+    "recommendation": "Centralize an application identity key combining window kind and resource identity; reuse it for running state, window lists, activation and badges.",
+    "validation": "Launch ordinary browser windows and two pinned web apps; each icon must select only its own windows. Preserve the guest-app icon grouping already fixed.",
+    "sources": [
+      "embedded/tahoe/Dock.swift",
+      "embedded/tahoe/Workspace.swift"
+    ]
+  },
+  {
+    "id": "R021",
+    "domain": "Windows, Spaces and the app bar",
+    "priority": "P2",
+    "kind": "Confirmed",
+    "effort": "S",
+    "title": "Keep web-app identity in New Window actions",
+    "finding": "The Applications web-app Open in New Window action uses openBrowser(url:), unlike the Dock path that uses openWebApp(newWindow: true).",
+    "recommendation": "Route every web-app launch through the same resource-aware command so title, standalone treatment and Dock ownership remain consistent.",
+    "validation": "Launch the same app from Applications, Dock and Spotlight and compare icon, grouping and chrome.",
+    "sources": [
+      "embedded/tahoe/Applications.swift",
+      "embedded/tahoe/Workspace.swift",
+      "embedded/tahoe/Dock.swift"
+    ]
+  },
+  {
+    "id": "R022",
+    "domain": "Windows, Spaces and the app bar",
+    "priority": "P2",
+    "kind": "Candidate",
+    "effort": "S",
+    "title": "Keep window-picker opening and fullscreen changes atomic",
+    "finding": "Dock activation can change fullscreen state and then open a picker, while the root fullscreen observer dismisses menus. This creates a plausible dismissal race.",
+    "recommendation": "Sequence mode transitions and picker ownership in one command, or defer presentation until the layout transition is committed.",
+    "validation": "Open an app with several windows from overview and fullscreen repeatedly; the picker should remain open until selection or dismissal.",
+    "sources": [
+      "embedded/tahoe/Dock.swift",
+      "embedded/tahoe/DesktopView.swift",
+      "embedded/tahoe/Workspace.swift"
+    ]
+  },
+  {
+    "id": "R023",
+    "domain": "Windows, Spaces and the app bar",
+    "priority": "P2",
+    "kind": "Confirmed",
+    "effort": "M",
+    "title": "Handle narrow tiling and rotation without losing layouts",
+    "finding": "Half-width tiling can fall below the floating minimum width. Canvas changes clamp saved frames in place, which can discard a useful larger-screen arrangement.",
+    "recommendation": "Define minimum sizes per layout, use a fallback when two columns cannot fit, and retain normalized or per-display restore frames separately from the current clamped frame.",
+    "validation": "Rotate, enter narrow multitasking and return to a wide canvas; windows stay reachable and the earlier layout can return.",
+    "sources": [
+      "embedded/tahoe/WindowState.swift",
+      "embedded/tahoe/WindowInteraction.swift"
+    ]
+  },
+  {
+    "id": "R024",
+    "domain": "Windows, Spaces and the app bar",
+    "priority": "P2",
+    "kind": "Confirmed",
+    "effort": "S",
+    "title": "Make Show Desktop transfer keyboard ownership",
+    "finding": "Showing the desktop leaves an active window ID, while desktop keyboard handling depends on desktop activation.",
+    "recommendation": "Represent desktop focus explicitly and return focus to the correct window when leaving Show Desktop.",
+    "validation": "Use Show Desktop, select icons and invoke keyboard actions immediately; restore windows without sending commands to a hidden page.",
+    "sources": [
+      "embedded/tahoe/WindowState.swift",
+      "embedded/tahoe/DesktopView.swift",
+      "embedded/tahoe/DesktopIcons.swift"
+    ]
+  },
+  {
+    "id": "R025",
+    "domain": "Windows, Spaces and the app bar",
+    "priority": "P2",
+    "kind": "Candidate",
+    "effort": "M",
+    "title": "Profile minimize and overview snapshot costs",
+    "finding": "Window animation captures use main-thread drawHierarchy and a large shader surface. Overview can request many thumbnails together; image retention is not budgeted. These are profiling targets rather than measured regressions.",
+    "recommendation": "Measure capture cost, use window-sized bounded images, prioritize visible previews and limit concurrent snapshots. Evict by explicit age rather than dictionary order.",
+    "validation": "Measure frame time and memory during minimize/restore and overview with 1, 10 and 30 windows on a physical device.",
+    "sources": [
+      "embedded/tahoe/WindowMotion.swift",
+      "embedded/tahoe/Overlays.swift",
+      "embedded/tahoe/OverviewLayout.swift"
+    ]
+  },
+  {
+    "id": "R026",
+    "domain": "Windows, Spaces and the app bar",
+    "priority": "P2",
+    "kind": "Candidate",
+    "effort": "M",
+    "title": "Reduce desktop-wide invalidation",
+    "finding": "Broad observed workspace state and repeated firstIndex-based z-order lookup can make unrelated windows participate in updates; the root z-order lookup is quadratic in window count.",
+    "recommendation": "Precompute z-order and pass stable per-window state. Keep transient drag state local, preserving the isolation already introduced in the polish work.",
+    "validation": "Count view updates while dragging one window with many others open; optimize only paths confirmed to be expensive.",
+    "sources": [
+      "embedded/tahoe/DesktopView.swift",
+      "embedded/tahoe/DesktopWindow.swift",
+      "embedded/tahoe/Workspace.swift"
+    ]
+  },
+  {
+    "id": "R027",
+    "domain": "Windows, Spaces and the app bar",
+    "priority": "P2",
+    "kind": "Addition",
+    "effort": "M",
+    "title": "Offer a window layout palette",
+    "finding": "Basic tiling exists, but a discoverable layout palette would make arrangement easier than repeated manual dragging.",
+    "recommendation": "Add half, third and quarter layouts where space permits, snap previews and keyboard equivalents. Share geometry with resize constraints rather than adding separate magic numbers.",
+    "validation": "Apply layouts on narrow and wide canvases, cancel a snap, and verify accessible move/resize commands produce the same frames.",
+    "sources": [
+      "embedded/tahoe/WindowState.swift",
+      "embedded/tahoe/WindowInteraction.swift",
+      "embedded/tahoe/MenuBar.swift"
+    ]
+  },
+  {
+    "id": "R028",
+    "domain": "Windows, Spaces and the app bar",
+    "priority": "P3",
+    "kind": "Addition",
+    "effort": "L",
+    "title": "Save named window arrangements",
+    "finding": "The last workspace is restored, but users cannot explicitly save and switch named task layouts.",
+    "recommendation": "Store named arrangements of URLs, app identities and frames with a preview. Distinguish reopening web pages from relaunching native guests, which should remain an explicit choice.",
+    "validation": "Switch between study and writing layouts, resolve missing apps, and ensure Private pages never enter saved templates.",
+    "sources": [
+      "embedded/tahoe/Persistence.swift",
+      "embedded/tahoe/Workspace.swift",
+      "embedded/tahoe/WindowState.swift"
+    ]
+  },
+  {
+    "id": "R029",
+    "domain": "Windows, Spaces and the app bar",
+    "priority": "P3",
+    "kind": "Addition",
+    "effort": "M",
+    "title": "Extend Spaces organization",
+    "finding": "Spaces already exist; naming them and assigning apps would make them easier to remember and navigate.",
+    "recommendation": "Add names, optional per-Space wallpaper and Move to Space/Show on All Spaces actions where ownership allows. Add clear keyboard commands and an overview destination preview.",
+    "validation": "Move minimized and fullscreen windows between Spaces, restore the session and check focus and Dock ownership.",
+    "sources": [
+      "embedded/tahoe/WindowState.swift",
+      "embedded/tahoe/Overlays.swift",
+      "embedded/tahoe/Settings.swift"
+    ]
+  },
+  {
+    "id": "R030",
+    "domain": "Windows, Spaces and the app bar",
+    "priority": "P3",
+    "kind": "Addition",
+    "effort": "L",
+    "title": "Support shared-edge resizing for tiled windows",
+    "finding": "Independent tiled window resizing does not offer the convenience of an intentional shared divider.",
+    "recommendation": "Add adjustable tile groups with minimum widths and a visible divider affordance, after the basic layout constraints are unified.",
+    "validation": "Resize a group, detach a member, minimize one and rotate the device without overlap or unreachable content.",
+    "sources": [
+      "embedded/tahoe/WindowState.swift",
+      "embedded/tahoe/WindowInteraction.swift"
+    ]
+  },
+  {
+    "id": "R031",
+    "domain": "Windows, Spaces and the app bar",
+    "priority": "P3",
+    "kind": "Addition",
+    "effort": "M",
+    "title": "Add native-app pinning and recent launches",
+    "finding": "Guest apps now get individual running icons, while persistent pinning is more developed for web apps than native guests.",
+    "recommendation": "Allow pin/unpin for an installed native app using its stable installed identity, and offer a small recent-app list. Show missing installations as recoverable state.",
+    "validation": "Pin, relaunch, update and remove a guest; verify no duplicate Dock entries or stale paths.",
+    "sources": [
+      "embedded/tahoe/Dock.swift",
+      "embedded/tahoe/Applications.swift",
+      "embedded/tahoe/Guest.swift"
+    ]
+  },
+  {
+    "id": "R032",
+    "domain": "Windows, Spaces and the app bar",
+    "priority": "P3",
+    "kind": "Architecture",
+    "effort": "XL",
+    "title": "Prototype multiple scenes and external displays",
+    "finding": "Workspace singletons and first-key-window lookups assume one shell scene. Hosted guest scenes also have private API constraints.",
+    "recommendation": "First prototype scene-scoped command and presentation ownership. Define one supported external-display behavior before promising independent desktops or arbitrary guest movement.",
+    "validation": "Test two host scenes, display removal, keyboard focus and guest recovery on supported hardware; document platform limits.",
+    "sources": [
+      "embedded/tahoe/Workspace.swift",
+      "embedded/tahoe/Keyboard.swift",
+      "embedded/tahoe/Dialogs.swift",
+      "embedded/tahoe/Guest.swift"
+    ]
+  },
+  {
+    "id": "R033",
+    "domain": "Input, animation, accessibility and visual design",
+    "priority": "P2",
+    "kind": "Confirmed",
+    "effort": "S",
+    "title": "Remove avoidable single-click selection latency",
+    "finding": "PointerSurface requires the single tap to fail the double tap before selection, so single-click feedback waits for the double-click interval.",
+    "recommendation": "Select immediately on a valid first press and reserve the second click for opening. Keep drag initiation and modifier selection coherent.",
+    "validation": "Compare click-to-selection latency; test single/double click, Shift/Command selection and drag without accidental opening.",
+    "sources": [
+      "embedded/tahoe/SelectionViews.swift"
+    ]
+  },
+  {
+    "id": "R034",
+    "domain": "Input, animation, accessibility and visual design",
+    "priority": "P2",
+    "kind": "Candidate",
+    "effort": "S",
+    "title": "Apply disabled state to gesture callbacks",
+    "finding": "The pointer surface uses active/visible/enabled flags for visual feedback, but its coordinator invokes callbacks without checking those flags.",
+    "recommendation": "Define which actions may activate an inactive window, and reject disabled or hidden interactions in the gesture layer itself.",
+    "validation": "Use a real UIKit interaction test for a disabled surface and a hidden/covered window; distinguish intended click-to-focus from disallowed activation.",
+    "sources": [
+      "embedded/tahoe/SelectionViews.swift"
+    ]
+  },
+  {
+    "id": "R035",
+    "domain": "Input, animation, accessibility and visual design",
+    "priority": "P2",
+    "kind": "Confirmed",
+    "effort": "S",
+    "title": "Make the browser glass preference truthful",
+    "finding": "The glass modifier only tests whether browserGlass equals zero. All positive slider values use the same material and tint, despite a continuous transparency label.",
+    "recommendation": "Prefer an honest System Glass/Solid setting, or map the control to a supported meaningful visual parameter. Retain the approved opaque browser-bar shades and accessibility overrides.",
+    "validation": "Compare endpoints and middle settings in light/dark mode and Reduce Transparency. Do not simulate optical glass with additional blur layers.",
+    "sources": [
+      "embedded/tahoe/Design.swift",
+      "embedded/tahoe/Settings.swift"
+    ]
+  },
+  {
+    "id": "R036",
+    "domain": "Input, animation, accessibility and visual design",
+    "priority": "P2",
+    "kind": "Candidate",
+    "effort": "S",
+    "title": "Give each control one hover and press owner",
+    "finding": "Native glass interaction, row hover, pressed tint and child highlights can overlap. The outer tab hover ID can also be cleared by an older tab exit event.",
+    "recommendation": "Use one hit shape and feedback owner per control; guard hover exit by the current owner ID, as the corrected Dock/menu paths already do.",
+    "validation": "Sweep the pointer rapidly across adjacent tabs and disabled controls; check one active hover, stable selected text and no double highlight.",
+    "sources": [
+      "embedded/tahoe/Tabs.swift",
+      "embedded/tahoe/Design.swift",
+      "embedded/tahoe/Interaction.swift"
+    ]
+  },
+  {
+    "id": "R037",
+    "domain": "Input, animation, accessibility and visual design",
+    "priority": "P2",
+    "kind": "Architecture",
+    "effort": "M",
+    "title": "Use semantic motion and geometry tokens",
+    "finding": "MotionPolicy exists, but controls, menus and windows still contain independent timings. Menu-bar work-area metrics include both 30 and 32-point values.",
+    "recommendation": "Create a small vocabulary for press, hover, menu, resize and window transitions, plus explicit chrome metrics and intentional gutters. Respect Reduce Motion and Low Power behavior centrally.",
+    "validation": "Compare opening, closing, minimizing and switching with normal motion, reduced motion and low power; remove timing mismatches without adding delay.",
+    "sources": [
+      "embedded/tahoe/MotionPolicy.swift",
+      "embedded/tahoe/Design.swift",
+      "embedded/tahoe/WindowState.swift",
+      "embedded/tahoe/Controls.swift"
+    ]
+  },
+  {
+    "id": "R038",
+    "domain": "Input, animation, accessibility and visual design",
+    "priority": "P2",
+    "kind": "Addition",
+    "effort": "M",
+    "title": "Offer compact pointer and comfortable touch sizing",
+    "finding": "Several shell controls use 24-point metrics and traffic-light controls around 22\u00d730; the injected chat row already has a coarse-pointer treatment.",
+    "recommendation": "Expand hit regions for touch without unnecessarily enlarging pointer visuals. Provide a comfortable density mode and consistent minimum targets.",
+    "validation": "Use finger-only navigation on a small iPad, including close buttons, resize handles, tabs and menus; verify adjacent targets do not overlap.",
+    "sources": [
+      "embedded/tahoe/Controls.swift",
+      "embedded/tahoe/DesktopWindow.swift",
+      "embedded/tahoe/Tabs.swift",
+      "embedded/tahoe/Settings.swift"
+    ]
+  },
+  {
+    "id": "R039",
+    "domain": "Input, animation, accessibility and visual design",
+    "priority": "P2",
+    "kind": "Candidate",
+    "effort": "M",
+    "title": "Audit text size and contrast across the shell",
+    "finding": "Fixed small fonts are common, and a light custom accent with white selected text can have poor contrast.",
+    "recommendation": "Use semantic text styles where practical, constrain or adapt selected foreground contrast, and test accessibility sizes without clipping key actions.",
+    "validation": "Check large Dynamic Type, Increase Contrast, Reduce Transparency, light/dark mode and very pale accent colors.",
+    "sources": [
+      "embedded/tahoe/Design.swift",
+      "embedded/tahoe/Controls.swift",
+      "embedded/tahoe/Settings.swift",
+      "embedded/tahoe/Dialogs.swift"
+    ]
+  },
+  {
+    "id": "R040",
+    "domain": "Input, animation, accessibility and visual design",
+    "priority": "P2",
+    "kind": "Addition",
+    "effort": "M",
+    "title": "Make window operations accessible without dragging",
+    "finding": "Pointer resize grips and title-bar movement do not provide equivalent discoverable accessibility actions.",
+    "recommendation": "Expose Move, Resize, Tile, Minimize and Close commands with clear VoiceOver labels, and include the actual page title in tab close labels.",
+    "validation": "Arrange and close windows using VoiceOver and a keyboard only; ensure hidden windows and offscreen controls are excluded.",
+    "sources": [
+      "embedded/tahoe/DesktopWindow.swift",
+      "embedded/tahoe/WindowInteraction.swift",
+      "embedded/tahoe/Tabs.swift"
+    ]
+  },
+  {
+    "id": "R041",
+    "domain": "Input, animation, accessibility and visual design",
+    "priority": "P2",
+    "kind": "Confirmed",
+    "effort": "M",
+    "title": "Scope keyboard commands to the visible owner",
+    "finding": "The desktop remains mounted with opacity zero behind management UI, and hidden keyboard-shortcut buttons remain registered. Local dialogs and global commands can also compete.",
+    "recommendation": "Introduce a command context for management, modal, focused window, focused pane and desktop. Route each key once to the top eligible owner.",
+    "validation": "Use Command-W, Enter, Escape, Delete and app shortcuts with management, menus, dialogs and background windows present.",
+    "sources": [
+      "embedded/tahoe/DesktopView.swift",
+      "embedded/tahoe/Keyboard.swift",
+      "embedded/tahoe/patch.py",
+      "embedded/tahoe/Dialogs.swift"
+    ]
+  },
+  {
+    "id": "R042",
+    "domain": "Input, animation, accessibility and visual design",
+    "priority": "P2",
+    "kind": "Addition",
+    "effort": "S",
+    "title": "Define outer-tab versus inner-chat keyboard behavior",
+    "finding": "Command-W currently follows the outer browser/window model even when an inner chat has focus. The right policy is a product decision, not an automatic bug fix.",
+    "recommendation": "Document one hierarchy and expose distinct commands for Close Chat, Close Browser Tab and Close Window. Include the effective shortcut in each menu.",
+    "validation": "Test focused left/right split panes, address editing and a normal website; closing the intended object must still honor draft protection.",
+    "sources": [
+      "embedded/tahoe/MenuBar.swift",
+      "embedded/tahoe/Keyboard.swift",
+      "embedded/tahoe/ChatWorkspace.swift"
+    ]
+  },
+  {
+    "id": "R043",
+    "domain": "Input, animation, accessibility and visual design",
+    "priority": "P2",
+    "kind": "Candidate",
+    "effort": "M",
+    "title": "Add submenu pointer-intent handling",
+    "finding": "The single menu owner is an improvement, but nested menus do not have a pointer corridor for diagonal travel into a submenu.",
+    "recommendation": "Add a short pointer-intent corridor for submenu traversal while retaining immediate top-level menu switching and one open menu chain.",
+    "validation": "Travel diagonally, rapidly switch top-level menus, leave the chain and use keyboard arrows; do not reintroduce multiple lingering dropdowns.",
+    "sources": [
+      "embedded/tahoe/Menus.swift",
+      "embedded/tahoe/MenuBar.swift"
+    ]
+  },
+  {
+    "id": "R044",
+    "domain": "Input, animation, accessibility and visual design",
+    "priority": "P2",
+    "kind": "Candidate",
+    "effort": "S",
+    "title": "Use stable menu item identities",
+    "finding": "Generic menu identity can fall back to title/key combinations, which are not unique for repeated labels.",
+    "recommendation": "Require stable keys for dynamic duplicate entries and preserve focus by identity rather than index.",
+    "validation": "Show two entries with the same title, change their order while a menu is open, and select each by pointer and keyboard.",
+    "sources": [
+      "embedded/tahoe/Menus.swift"
+    ]
+  },
+  {
+    "id": "R045",
+    "domain": "Input, animation, accessibility and visual design",
+    "priority": "P2",
+    "kind": "Confirmed",
+    "effort": "S",
+    "title": "Give Calendar a moving keyboard focus",
+    "finding": "Arrow handling calculates from a captured day cell but does not move focus with the chosen date, so repeated key presses can reuse the old origin.",
+    "recommendation": "Maintain an explicit focused date and roving focus, including month/year boundaries and locale direction.",
+    "validation": "Hold arrows across month boundaries and use Home/End with VoiceOver and RTL layouts.",
+    "sources": [
+      "embedded/tahoe/Calendar.swift"
+    ]
+  },
+  {
+    "id": "R046",
+    "domain": "Input, animation, accessibility and visual design",
+    "priority": "P2",
+    "kind": "Candidate",
+    "effort": "S",
+    "title": "Cancel repeating controls on interrupted gestures",
+    "finding": "Stepper repeat cleanup relies on normal gesture completion; cancellation or focus changes may bypass that path. Home/End assignments also need the same disabled guard as increment/decrement.",
+    "recommendation": "Cancel repeat tasks on gesture cancellation, disappearance and ownership loss, and centralize enabled/range checks.",
+    "validation": "Start a hold, open another window or interrupt the gesture, then verify no continued changes; test disabled focused controls.",
+    "sources": [
+      "embedded/tahoe/Controls.swift"
+    ]
+  },
+  {
+    "id": "R047",
+    "domain": "Input, animation, accessibility and visual design",
+    "priority": "P2",
+    "kind": "Addition",
+    "effort": "M",
+    "title": "Support localization and directional layouts",
+    "finding": "Most desktop strings are English literals despite localization in the upstream installer. RTL keyboard/layout behavior is not consistently specified.",
+    "recommendation": "Move shell strings to a catalog and audit leading/trailing layout, segmented controls, date navigation and shortcut descriptions. Start with pseudo-localization before adding languages.",
+    "validation": "Run long-string and RTL passes across Settings, dialogs, menus, Dock pickers and file lists.",
+    "sources": [
+      "embedded/tahoe/Controls.swift",
+      "embedded/tahoe/Calendar.swift",
+      "embedded/tahoe/Settings.swift",
+      "embedded/tahoe/MenuBar.swift"
+    ]
+  },
+  {
+    "id": "R048",
+    "domain": "Input, animation, accessibility and visual design",
+    "priority": "P2",
+    "kind": "Confirmed",
+    "effort": "S",
+    "title": "Show complete error details",
+    "finding": "The generic dialog limits messages to eight lines in a compact fixed-width card, which can hide useful recovery details.",
+    "recommendation": "Keep a short explanation and primary recovery action visible, with expandable scrollable details and Copy Diagnostics for technical failures.",
+    "validation": "Present a long signing error and a browser error at large text sizes without hiding the action or leaking secrets in copied text.",
+    "sources": [
+      "embedded/tahoe/Dialogs.swift"
+    ]
+  },
+  {
+    "id": "R049",
+    "domain": "Input, animation, accessibility and visual design",
+    "priority": "P2",
+    "kind": "Candidate",
+    "effort": "M",
+    "title": "Scope dialogs and share sheets to their owners",
+    "finding": "A global single-slot dialog can replace pending context; share presentation uses a first-active-scene/center anchor rather than the invoking control.",
+    "recommendation": "Track presentation owner and cancellation, queue or reject conflicting requests explicitly, and anchor popovers to the source control in the correct scene.",
+    "validation": "Trigger two prompts, close the originating window and use a share action with a second scene active.",
+    "sources": [
+      "embedded/tahoe/Dialogs.swift",
+      "embedded/tahoe/Browser.swift"
+    ]
+  },
+  {
+    "id": "R050",
+    "domain": "Input, animation, accessibility and visual design",
+    "priority": "P2",
+    "kind": "Confirmed",
+    "effort": "S",
+    "title": "Track all fullscreen popover owners",
+    "finding": "The browser fullscreen visibility boolean includes bookmarks, tabs and profile popovers but omits translation. Disappearance can clear the shared flag independently of another owner.",
+    "recommendation": "Replace the boolean with owner-scoped presentation tokens, including translation and keyboard focus.",
+    "validation": "Open each popover near the fullscreen chrome edge, switch directly between them and verify the toolbar does not hide underneath it.",
+    "sources": [
+      "embedded/tahoe/Browser.swift",
+      "embedded/tahoe/FullscreenChrome.swift"
+    ]
+  },
+  {
+    "id": "R051",
+    "domain": "Input, animation, accessibility and visual design",
+    "priority": "P3",
+    "kind": "Observed",
+    "effort": "S",
+    "title": "Improve closing continuity",
+    "finding": "The recording around 1:55 shows a fast browser disappearance back to the desktop; it does not establish exact frame pacing.",
+    "recommendation": "Use a short, consistent close transition with immediate input completion, and reserve heavier effects for minimize/restore.",
+    "validation": "Compare device recordings with normal and reduced motion and ensure repeated close commands cannot act on the next window accidentally.",
+    "sources": [
+      "embedded/tahoe/DesktopWindow.swift",
+      "embedded/tahoe/WindowMotion.swift",
+      "embedded/tahoe/MotionPolicy.swift"
+    ]
+  },
+  {
+    "id": "R052",
+    "domain": "Browser capabilities and website compatibility",
+    "priority": "P2",
+    "kind": "Confirmed",
+    "effort": "S",
+    "title": "Recognize local development addresses",
+    "finding": "Bare localhost:8080 is treated as a scheme-like input and rejected, while explicit http://localhost:8080 works.",
+    "recommendation": "Recognize localhost, loopback and valid host:port forms before general scheme rejection. Keep explicit scheme and host validation.",
+    "validation": "Test localhost with ports/paths, IPv4, bracketed IPv6, malformed ports and ordinary search queries.",
+    "sources": [
+      "embedded/tahoe/Address.swift",
+      "embedded/tahoe/WindowStateTests.swift"
+    ]
+  },
+  {
+    "id": "R053",
+    "domain": "Browser capabilities and website compatibility",
+    "priority": "P2",
+    "kind": "Addition",
+    "effort": "M",
+    "title": "Add Find on Page",
+    "finding": "A standard find-in-page command and small result navigator are absent.",
+    "recommendation": "Use WebKit find support with a compact search field, next/previous, result count and Escape dismissal. Target the focused split pane.",
+    "validation": "Find text in normal pages, long chats and each split pane; keep focus and keyboard routing predictable.",
+    "sources": [
+      "embedded/tahoe/Browser.swift",
+      "embedded/tahoe/MenuBar.swift"
+    ]
+  },
+  {
+    "id": "R054",
+    "domain": "Browser capabilities and website compatibility",
+    "priority": "P2",
+    "kind": "Addition",
+    "effort": "M",
+    "title": "Add searchable browsing history",
+    "finding": "The existing history menu reflects current WebKit back/forward state rather than a persistent cross-window history library.",
+    "recommendation": "Store a bounded profile-aware title/URL history with clear retention and deletion controls; exclude Private browsing.",
+    "validation": "Search across windows, clear one profile, restart and verify that Private visits are absent.",
+    "sources": [
+      "embedded/tahoe/Browser.swift",
+      "embedded/tahoe/Persistence.swift",
+      "embedded/tahoe/MenuBar.swift"
+    ]
+  },
+  {
+    "id": "R055",
+    "domain": "Browser capabilities and website compatibility",
+    "priority": "P2",
+    "kind": "Addition",
+    "effort": "M",
+    "title": "Make bookmarks manageable",
+    "finding": "Bookmark opening works in the recording, but organization and editing are limited.",
+    "recommendation": "Add rename, move, delete, folders and import/export, using the same library for the menu and management UI.",
+    "validation": "Edit duplicate titles, move nested folders and recover gracefully from invalid imports without replacing the existing collection.",
+    "sources": [
+      "embedded/tahoe/Browser.swift",
+      "embedded/tahoe/Persistence.swift",
+      "embedded/tahoe/Preferences.swift"
+    ]
+  },
+  {
+    "id": "R056",
+    "domain": "Browser capabilities and website compatibility",
+    "priority": "P2",
+    "kind": "Addition",
+    "effort": "M",
+    "title": "Add per-site permissions and data controls",
+    "finding": "Website permissions use prompts, but there is no cohesive site panel for grants, revocation and stored data.",
+    "recommendation": "Expose origin, profile, camera/microphone decisions, zoom and clear-site-data where WebKit supports it. Make the active requesting origin clear and scope decisions to the requesting page.",
+    "validation": "Test foreground/background requests, changed origins, revoked access and independent profiles.",
+    "sources": [
+      "embedded/tahoe/Browser.swift",
+      "embedded/tahoe/Authentication.swift"
+    ]
+  },
+  {
+    "id": "R057",
+    "domain": "Browser capabilities and website compatibility",
+    "priority": "P2",
+    "kind": "Addition",
+    "effort": "S",
+    "title": "Use appropriate authentication field semantics",
+    "finding": "HTTP authentication is origin-labelled and ephemeral, but the custom fields could better advertise username/password roles to the system.",
+    "recommendation": "Set the relevant textContentType and secure entry semantics, retain origin context and avoid persisting credentials casually.",
+    "validation": "Check keyboard/password-manager behavior, cancellation and repeated challenges on the correct origin.",
+    "sources": [
+      "embedded/tahoe/Authentication.swift",
+      "embedded/tahoe/Browser.swift"
+    ]
+  },
+  {
+    "id": "R058",
+    "domain": "Browser capabilities and website compatibility",
+    "priority": "P2",
+    "kind": "Candidate",
+    "effort": "M",
+    "title": "Test popup and sign-in compatibility",
+    "finding": "Popup creation changes userContentController setup, and about:blank/opener-dependent flows need verification. Source inspection alone does not prove current OAuth is broken.",
+    "recommendation": "Create a compatibility matrix for opener messaging, blank-to-navigation popups, sign-in, print and download windows before changing configuration ownership.",
+    "validation": "Run controlled fixture pages for each flow plus representative real sign-ins, preserving the chosen profile store and bridge isolation.",
+    "sources": [
+      "embedded/tahoe/Browser.swift",
+      "tools/test-chatgpt-workspace.cjs"
+    ]
+  },
+  {
+    "id": "R059",
+    "domain": "Browser capabilities and website compatibility",
+    "priority": "P2",
+    "kind": "Addition",
+    "effort": "M",
+    "title": "Support intentional external-app handoff",
+    "finding": "The browser policy rejects mailto:, tel: and app links rather than offering a user-controlled handoff.",
+    "recommendation": "Allow a narrow set of user-initiated external actions through the system opener, with clear destination context. Retain blocking for arbitrary executable/file navigation.",
+    "validation": "Test user clicks, scripted attempts, missing handlers and return-to-browser focus. Do not broadly allow all schemes.",
+    "sources": [
+      "embedded/tahoe/Address.swift",
+      "embedded/tahoe/Browser.swift"
+    ]
+  },
+  {
+    "id": "R060",
+    "domain": "Browser capabilities and website compatibility",
+    "priority": "P2",
+    "kind": "Candidate",
+    "effort": "M",
+    "title": "Improve favicon candidate fallback",
+    "finding": "ChatGPT remains a globe in the recording. The icon pipeline selects an early declared icon and uses raster decoding, so SVG-first sites are a plausible failure case rather than a proven cause here.",
+    "recommendation": "Rank supported icon candidates, try raster/apple-touch fallbacks, bound image decoding and cache size, and cancel obsolete requests. Keep requests direct rather than adding a tracking proxy.",
+    "validation": "Use SVG-first, PNG-only, invalid-icon, redirect and dark-mode fixtures; inspect the actual ChatGPT icon request failure on device.",
+    "sources": [
+      "embedded/tahoe/Browser.swift",
+      "embedded/tahoe/WebsiteIdentity.swift"
+    ]
+  },
+  {
+    "id": "R061",
+    "domain": "Browser capabilities and website compatibility",
+    "priority": "P2",
+    "kind": "Candidate",
+    "effort": "S",
+    "title": "Test user-agent compatibility instead of guessing versions",
+    "finding": "The presented browser version is derived from the iPadOS major rather than a measured WebKit/Safari compatibility mapping.",
+    "recommendation": "Document the intentional user-agent policy, minimize unnecessary spoofing and validate sites that branch on browser versions.",
+    "validation": "Compare desktop/mobile site negotiation, login and media behavior with the current and a controlled default user agent.",
+    "sources": [
+      "embedded/tahoe/WebsiteIdentity.swift",
+      "embedded/tahoe/Browser.swift"
+    ]
+  },
+  {
+    "id": "R062",
+    "domain": "Browser capabilities and website compatibility",
+    "priority": "P2",
+    "kind": "Addition",
+    "effort": "M",
+    "title": "Add open-tab search and tab organization",
+    "finding": "A growing number of ordinary tabs needs a faster switcher than scanning the strip.",
+    "recommendation": "Add a searchable tab overview with profile/window context, optional pinned tabs and named groups. Share page identity with session recovery rather than duplicating URL lists.",
+    "validation": "Find one of many same-host tabs, move it between windows and restore its group without losing the live page.",
+    "sources": [
+      "embedded/tahoe/Tabs.swift",
+      "embedded/tahoe/Browser.swift",
+      "embedded/tahoe/Overlays.swift"
+    ]
+  },
+  {
+    "id": "R063",
+    "domain": "Browser capabilities and website compatibility",
+    "priority": "P3",
+    "kind": "Addition",
+    "effort": "L",
+    "title": "Offer reading and offline page tools",
+    "finding": "Reader-style presentation and offline reading are not currently a cohesive feature.",
+    "recommendation": "Start with Save PDF/Print and reading-list entries; evaluate article extraction or web archives separately. Do not assume Safari Reader internals are a public reusable API.",
+    "validation": "Save long articles, login-required pages and pages with missing assets, with clear limits and no promise of perfect offline fidelity.",
+    "sources": [
+      "embedded/tahoe/Browser.swift",
+      "embedded/tahoe/Files.swift",
+      "embedded/tahoe/Downloads.swift"
+    ]
+  },
+  {
+    "id": "R064",
+    "domain": "Browser capabilities and website compatibility",
+    "priority": "P3",
+    "kind": "Addition",
+    "effort": "M",
+    "title": "Expose media-playing tabs and mute controls",
+    "finding": "Tabs do not provide a clear audio-playing indicator or a user-facing media management surface.",
+    "recommendation": "Add a modest supported audio state/mute action where WebKit permits it and integrate media protection with any future sleeping policy.",
+    "validation": "Play audio in a background tab, mute/unmute, close it and verify page suspension does not interrupt explicitly protected media.",
+    "sources": [
+      "embedded/tahoe/Browser.swift",
+      "embedded/tahoe/Tabs.swift"
+    ]
+  },
+  {
+    "id": "R065",
+    "domain": "Browser capabilities and website compatibility",
+    "priority": "P3",
+    "kind": "Addition",
+    "effort": "L",
+    "title": "Evaluate optional content blocking",
+    "finding": "There is no curated content-blocking capability.",
+    "recommendation": "Prototype WKContentRuleList with explicit opt-in, per-site exceptions and a visible reload/recovery path. Measure breakage and update needs before making it a default.",
+    "validation": "Test sign-in, payments, video and ChatGPT with blocking enabled and disabled; avoid a silent remote rule-update dependency.",
+    "sources": [
+      "embedded/tahoe/Browser.swift",
+      "embedded/tahoe/Settings.swift"
+    ]
+  },
+  {
+    "id": "R066",
+    "domain": "Files, downloads, desktop icons and search",
+    "priority": "P1",
+    "kind": "Confirmed",
+    "effort": "M",
+    "title": "Move file enumeration and recursive operations off the UI actor",
+    "finding": "Files refresh enumerates directories and reads metadata on the main actor; trash operations can also perform recursive filesystem work there. Filtering/sorting is recomputed from view helpers.",
+    "recommendation": "Use a filesystem worker with immutable directory snapshots, generation cancellation and explicit operation progress. Cache derived presentation results by snapshot and sort/filter inputs.",
+    "validation": "Browse folders with thousands of entries and empty a large trash while dragging another window; verify responsiveness and correct partial-failure reporting.",
+    "sources": [
+      "embedded/tahoe/Files.swift",
+      "embedded/tahoe/FileOperations.swift"
+    ]
+  },
+  {
+    "id": "R067",
+    "domain": "Files, downloads, desktop icons and search",
+    "priority": "P2",
+    "kind": "Confirmed",
+    "effort": "S",
+    "title": "Prevent an older paste from clearing a newer clipboard",
+    "finding": "A move-style paste captures old URLs, awaits work and then clears the shared URL list. A new Copy performed during that wait can be erased.",
+    "recommendation": "Attach a revision to clipboard contents and clear only the revision consumed by the completed move.",
+    "validation": "Start a slow cut/paste, copy another file before completion, and verify the new clipboard remains available.",
+    "sources": [
+      "embedded/tahoe/FileClipboard.swift",
+      "embedded/tahoe/FileOperations.swift"
+    ]
+  },
+  {
+    "id": "R068",
+    "domain": "Files, downloads, desktop icons and search",
+    "priority": "P2",
+    "kind": "Confirmed",
+    "effort": "S",
+    "title": "Use grid geometry for arrow navigation",
+    "finding": "File-grid up/down navigation moves by one linear item rather than the visible column count.",
+    "recommendation": "Compute navigation from the current grid geometry, preserve an anchor column and reveal the selected item.",
+    "validation": "Navigate a resized grid with incomplete final rows and Shift selection, including RTL layouts.",
+    "sources": [
+      "embedded/tahoe/Files.swift"
+    ]
+  },
+  {
+    "id": "R069",
+    "domain": "Files, downloads, desktop icons and search",
+    "priority": "P2",
+    "kind": "Confirmed",
+    "effort": "M",
+    "title": "Preserve desktop icon placement through rename",
+    "finding": "Icon positions use absolute URL strings as identities. Renaming changes the key, and old position entries can remain stored.",
+    "recommendation": "Use a stable file identity where available, migrate position keys on rename/move and prune missing entries.",
+    "validation": "Rename, move, delete and recreate files; the intended icon keeps its position without accumulating stale keys.",
+    "sources": [
+      "embedded/tahoe/DesktopIcons.swift",
+      "embedded/tahoe/FileOperations.swift"
+    ]
+  },
+  {
+    "id": "R070",
+    "domain": "Files, downloads, desktop icons and search",
+    "priority": "P2",
+    "kind": "Addition",
+    "effort": "M",
+    "title": "Give Desktop its own folder",
+    "finding": "The desktop currently presents the root Documents contents rather than a separate Desktop directory.",
+    "recommendation": "Offer a real Desktop folder with a migration choice, leaving existing documents discoverable. Keep filesystem and visual desktop ownership consistent.",
+    "validation": "Upgrade with existing files and icon placements, then add a document in Finder and on Desktop and verify their locations.",
+    "sources": [
+      "embedded/tahoe/DesktopIcons.swift",
+      "embedded/tahoe/Files.swift",
+      "embedded/tahoe/Persistence.swift"
+    ]
+  },
+  {
+    "id": "R071",
+    "domain": "Files, downloads, desktop icons and search",
+    "priority": "P2",
+    "kind": "Addition",
+    "effort": "L",
+    "title": "Support multiple Finder windows and file transfer",
+    "finding": "The Files app is effectively a single shared window/location, which limits moving items between folders.",
+    "recommendation": "Store navigation and selection per Finder window, then support drag/copy/move between them and the desktop. Add system Files-provider integration through supported document APIs.",
+    "validation": "Open two folders, transfer mixed selections and cancel midway; verify security-scoped URLs and per-window navigation remain valid.",
+    "sources": [
+      "embedded/tahoe/Files.swift",
+      "embedded/tahoe/Workspace.swift",
+      "embedded/tahoe/FileOperations.swift"
+    ]
+  },
+  {
+    "id": "R072",
+    "domain": "Files, downloads, desktop icons and search",
+    "priority": "P2",
+    "kind": "Addition",
+    "effort": "M",
+    "title": "Restore trash items to their original locations",
+    "finding": "The current UI accurately says Put Back in Documents; original locations are not recorded.",
+    "recommendation": "Store original URL and deletion date in trash metadata, offer Restore and resolve missing parent/conflicting filenames explicitly.",
+    "validation": "Restore nested files and duplicate names after the original folder has been removed.",
+    "sources": [
+      "embedded/tahoe/Files.swift",
+      "embedded/tahoe/FileOperations.swift"
+    ]
+  },
+  {
+    "id": "R073",
+    "domain": "Files, downloads, desktop icons and search",
+    "priority": "P2",
+    "kind": "Addition",
+    "effort": "L",
+    "title": "Add undo and operation-level recovery",
+    "finding": "File mutations need clearer recovery than a final success/error result.",
+    "recommendation": "Build a bounded undo journal for reversible rename/move/trash actions, plus per-item progress, safe cancellation points and partial-result summaries. Do not imply permanent deletion is always reversible.",
+    "validation": "Cancel halfway through a multi-file operation, retry failed items only and undo supported operations after a name conflict.",
+    "sources": [
+      "embedded/tahoe/FileOperations.swift",
+      "embedded/tahoe/Files.swift",
+      "embedded/tahoe/Dialogs.swift"
+    ]
+  },
+  {
+    "id": "R074",
+    "domain": "Files, downloads, desktop icons and search",
+    "priority": "P3",
+    "kind": "Addition",
+    "effort": "M",
+    "title": "Add preview and file information",
+    "finding": "File browsing would benefit from faster inspection before opening an external handler.",
+    "recommendation": "Add supported Quick Look previews, a Get Info panel and bounded thumbnails. Keep preview decoding off the interaction path.",
+    "validation": "Preview large images, PDFs and unsupported files while maintaining selection and bounded memory.",
+    "sources": [
+      "embedded/tahoe/Files.swift",
+      "embedded/tahoe/Artwork.swift"
+    ]
+  },
+  {
+    "id": "R075",
+    "domain": "Files, downloads, desktop icons and search",
+    "priority": "P3",
+    "kind": "Addition",
+    "effort": "M",
+    "title": "Add batch rename and conflict resolution",
+    "finding": "Repeated file organization requires many individual actions and consistent conflict handling.",
+    "recommendation": "Provide a preview-first batch rename flow, Skip/Replace/Keep Both options where appropriate and one undoable operation summary.",
+    "validation": "Preview duplicate outputs, invalid names and case-only changes before making filesystem mutations.",
+    "sources": [
+      "embedded/tahoe/Files.swift",
+      "embedded/tahoe/FileOperations.swift"
+    ]
+  },
+  {
+    "id": "R076",
+    "domain": "Files, downloads, desktop icons and search",
+    "priority": "P2",
+    "kind": "Confirmed",
+    "effort": "M",
+    "title": "Make Spotlight work cancellable and ranked",
+    "finding": "Each query starts detached scanning. Cancelling the UI task suppresses stale display but does not stop the underlying enumerator. Entry/result caps can favor apps over files/web results.",
+    "recommendation": "Use a cancellable worker or incremental local index, budget each result category and rank by relevance/recency. Make indexing scope visible.",
+    "validation": "Type and delete queries rapidly in a large directory; measure abandoned work and confirm a matching file is not crowded out by apps.",
+    "sources": [
+      "embedded/tahoe/Overlays.swift"
+    ]
+  },
+  {
+    "id": "R077",
+    "domain": "Files, downloads, desktop icons and search",
+    "priority": "P2",
+    "kind": "Confirmed",
+    "effort": "S",
+    "title": "Reveal the actual search result in Finder",
+    "finding": "Opening a file search result opens its containing folder without selecting the matched file.",
+    "recommendation": "Pass a reveal selection to the destination Finder instance and scroll it into view.",
+    "validation": "Reveal a file in a large sorted folder, including one renamed while search was running.",
+    "sources": [
+      "embedded/tahoe/Overlays.swift",
+      "embedded/tahoe/Workspace.swift",
+      "embedded/tahoe/Files.swift"
+    ]
+  },
+  {
+    "id": "R078",
+    "domain": "Files, downloads, desktop icons and search",
+    "priority": "P2",
+    "kind": "Addition",
+    "effort": "M",
+    "title": "Include open windows and chats in global search",
+    "finding": "Global search already includes apps/files/web suggestions, but not a unified Jump to Window or Chat result.",
+    "recommendation": "Add explicit window/tab/chat categories using existing titles and IDs, with profile context and immediate focus. Do not index chat message contents.",
+    "validation": "Find two same-title chats in different windows and activate the intended pane without reloading it.",
+    "sources": [
+      "embedded/tahoe/Overlays.swift",
+      "embedded/tahoe/Workspace.swift",
+      "embedded/tahoe/ChatWorkspace.swift"
+    ]
+  },
+  {
+    "id": "R079",
+    "domain": "Files, downloads, desktop icons and search",
+    "priority": "P2",
+    "kind": "Confirmed",
+    "effort": "M",
+    "title": "Use download resume data",
+    "finding": "The WebKit failure callback receives resumeData but discards it. The UI has no corresponding pause/resume/retry flow.",
+    "recommendation": "Retain supported resume data securely and expose Retry/Resume with accurate fallback to restart when resumption is unsupported.",
+    "validation": "Interrupt a large download, relaunch and resume or clearly restart it without generating duplicate final files.",
+    "sources": [
+      "embedded/tahoe/Downloads.swift",
+      "embedded/tahoe/Browser.swift"
+    ]
+  },
+  {
+    "id": "R080",
+    "domain": "Files, downloads, desktop icons and search",
+    "priority": "P2",
+    "kind": "Addition",
+    "effort": "M",
+    "title": "Give downloads history and useful progress",
+    "finding": "Download state is in memory and lacks a durable completed list, byte totals, speed/ETA and destination choice. Completed files themselves survive in Finder.",
+    "recommendation": "Persist bounded metadata, show bytes/progress and a destination action, add Reveal in Finder and a clear completion/failure notification.",
+    "validation": "Test unknown content lengths, filename collisions, cancelled downloads and relaunch with both completed and interrupted items.",
+    "sources": [
+      "embedded/tahoe/Downloads.swift",
+      "embedded/tahoe/Files.swift",
+      "embedded/tahoe/Preferences.swift"
+    ]
+  },
+  {
+    "id": "R081",
+    "domain": "Files, downloads, desktop icons and search",
+    "priority": "P3",
+    "kind": "Addition",
+    "effort": "M",
+    "title": "Add file favorites and recent locations",
+    "finding": "Repeated navigation would benefit from user-controlled shortcuts beyond the current basic locations.",
+    "recommendation": "Add favorite folders, recent files/locations and optional tags backed by app-owned metadata, respecting available sandbox/provider access.",
+    "validation": "Move or revoke an external location and show a repair action instead of a dead favorite.",
+    "sources": [
+      "embedded/tahoe/Files.swift",
+      "embedded/tahoe/Persistence.swift"
+    ]
+  },
+  {
+    "id": "R082",
+    "domain": "Hosted apps, installation and background work",
+    "priority": "P2",
+    "kind": "Confirmed",
+    "effort": "M",
+    "title": "Queue rapid native-app launches visibly",
+    "finding": "The launch coordinator silently returns when a launch is already in progress. Some launch surfaces can still accept rapid clicks.",
+    "recommendation": "Use a small serial launch queue with queued/connecting/launching status and safe cancellation. Preserve the upstream selected-storage-path handoff; do not parallelize it casually.",
+    "validation": "Launch three different guests quickly from different surfaces and verify every request is either executed or explicitly cancelled.",
+    "sources": [
+      "embedded/tahoe/Guest.swift",
+      "embedded/tahoe/Applications.swift",
+      "embedded/tahoe/Overlays.swift"
+    ]
+  },
+  {
+    "id": "R083",
+    "domain": "Hosted apps, installation and background work",
+    "priority": "P2",
+    "kind": "Confirmed",
+    "effort": "S",
+    "title": "Pause the guest watchdog during app suspension",
+    "finding": "The guest launch timeout is approximately 45 seconds and does not account for background suspension like the new browser restore watchdog does.",
+    "recommendation": "Use foreground elapsed time or an explicit lifecycle pause, retaining a bounded real failure path.",
+    "validation": "Background during launch for longer than the timeout, return and verify that a healthy launch is not marked failed immediately.",
+    "sources": [
+      "embedded/tahoe/Guest.swift",
+      "embedded/tahoe/DesktopView.swift"
+    ]
+  },
+  {
+    "id": "R084",
+    "domain": "Hosted apps, installation and background work",
+    "priority": "P2",
+    "kind": "Addition",
+    "effort": "M",
+    "title": "Make guest recovery actionable",
+    "finding": "A failed hosted launch mainly presents error text, leaving users to infer whether to relaunch, enable JIT or return to management.",
+    "recommendation": "Offer context-appropriate Relaunch, JIT Setup, Open Management and Copy Diagnostics actions. Keep the original error details accessible.",
+    "validation": "Exercise missing JIT, disconnected device connection, removed app and hosted scene termination; verify actions return to the same app context.",
+    "sources": [
+      "embedded/tahoe/Guest.swift",
+      "embedded/tahoe/Dialogs.swift"
+    ]
+  },
+  {
+    "id": "R085",
+    "domain": "Hosted apps, installation and background work",
+    "priority": "P2",
+    "kind": "Architecture",
+    "effort": "M",
+    "title": "Create a host activity center",
+    "finding": "Downloads, signing, refresh and launch operations expose status through separate parts of the shell and engine.",
+    "recommendation": "Present one app-owned job model with phase, progress, owner and safe cancel/retry actions. Reuse the upstream refresh lease and background queues rather than creating competing runners.",
+    "validation": "Run refresh plus download and queued launch; verify one operation owner, accurate status and cancellation only at safe boundaries.",
+    "sources": [
+      "embedded/tahoe/Guest.swift",
+      "embedded/tahoe/Downloads.swift"
+    ]
+  },
+  {
+    "id": "R086",
+    "domain": "Hosted apps, installation and background work",
+    "priority": "P2",
+    "kind": "Candidate",
+    "effort": "M",
+    "title": "Validate lifecycle and private-scene compatibility",
+    "finding": "Guest hosting depends on upstream private runtime and scene contracts; compile success does not establish behavior on every supported iPadOS/device combination.",
+    "recommendation": "Maintain a physical-device compatibility matrix for JIT, launch, background/foreground, scene destruction and relaunch. Document the supported boundary.",
+    "validation": "Run a repeatable smoke sequence on each supported OS/device family before a release, with redacted logs and no simulator requirement.",
+    "sources": [
+      "embedded/tahoe/Guest.swift",
+      "Engine.lock.json"
+    ]
+  },
+  {
+    "id": "R087",
+    "domain": "Hosted apps, installation and background work",
+    "priority": "P3",
+    "kind": "Architecture",
+    "effort": "S",
+    "title": "Name guest identities by what they contain",
+    "finding": "A guest field called bundleID is used as a relative bundle path in shell integration.",
+    "recommendation": "Introduce a typed installed-app identifier/path at the facade boundary to prevent confusing display names, bundle IDs and on-disk paths.",
+    "validation": "Update the shell facade without changing the pinned runtime contract; test update/reinstall path changes.",
+    "sources": [
+      "embedded/tahoe/Guest.swift",
+      "embedded/tahoe/Workspace.swift"
+    ]
+  },
+  {
+    "id": "R088",
+    "domain": "Hosted apps, installation and background work",
+    "priority": "P2",
+    "kind": "Candidate",
+    "effort": "M",
+    "title": "Measure background keep-alive costs",
+    "finding": "The pinned runtime has audio/location keep-alive mechanisms. Their presence alone does not establish misuse or battery drain in the embedded configuration.",
+    "recommendation": "Trace actual enabled callers, document the user-facing mode and measure idle/background energy before changing cleanup or defaults.",
+    "validation": "Compare energy and task cleanup with keep-alive enabled/disabled, successful refresh and failed connection; preserve required refresh reliability.",
+    "sources": [
+      "Engine.lock.json"
+    ]
+  },
+  {
+    "id": "R089",
+    "domain": "Settings, onboarding, assets and release clarity",
+    "priority": "P2",
+    "kind": "Confirmed",
+    "effort": "S",
+    "title": "Show installed version, build and source revision",
+    "finding": "About still uses Tahoe Desktop branding and lacks a visible app build/source revision. Identical IPA naming makes it hard to confirm which build is installed.",
+    "recommendation": "Adopt a consistent SideOS product name and show version, build number, short source SHA and channel. Include the same information in the artifact filename and release notes.",
+    "validation": "Install two successive builds and verify the user can identify them from inside the app without checking GitHub.",
+    "sources": [
+      "embedded/tahoe/Settings.swift",
+      "embedded/package.py",
+      ".github/workflows/private-build.yml"
+    ]
+  },
+  {
+    "id": "R090",
+    "domain": "Settings, onboarding, assets and release clarity",
+    "priority": "P2",
+    "kind": "Confirmed",
+    "effort": "S",
+    "title": "Correct stale settings and coverage documentation",
+    "finding": "Settings says other pages load only when selected, which is obsolete after automatic restoration. Source coverage and some older UI documents mention a native Notes editor or simulator/preview CI that are not the current product/build policy.",
+    "recommendation": "Update descriptions to match real behavior and publish a compact implemented/tested/manual-only coverage matrix. Distinguish optional web apps from native utilities.",
+    "validation": "Cross-check user-visible settings and build docs against current source and workflow jobs; no new native build is needed for documentation-only edits.",
+    "sources": [
+      "embedded/tahoe/Settings.swift",
+      "SOURCE-COVERAGE.md",
+      "docs/liquid-glass-interactions.md"
+    ]
+  },
+  {
+    "id": "R091",
+    "domain": "Settings, onboarding, assets and release clarity",
+    "priority": "P2",
+    "kind": "Addition",
+    "effort": "M",
+    "title": "Add lightweight first-run discovery",
+    "finding": "The ChatGPT activation confusion shows that features can work yet remain hard to discover.",
+    "recommendation": "Provide a dismissible first-run checklist for windows, right-click/long press, tabs, ChatGPT integration, guest setup and recovery. Link to a searchable shortcut sheet rather than repeated intrusive tips.",
+    "validation": "Have a new user create a split chat, detach a tab and find its window from the Dock without prior instruction.",
+    "sources": [
+      "embedded/tahoe/Settings.swift",
+      "embedded/tahoe/Applications.swift",
+      "embedded/tahoe/MenuBar.swift"
+    ]
+  },
+  {
+    "id": "R092",
+    "domain": "Settings, onboarding, assets and release clarity",
+    "priority": "P2",
+    "kind": "Addition",
+    "effort": "M",
+    "title": "Offer privacy-aware diagnostic export",
+    "finding": "Troubleshooting currently requires correlating app behavior, source revisions and workflow artifacts manually.",
+    "recommendation": "Export build manifest, recent redacted operation errors, page counts and non-sensitive lifecycle states with a preview. Omit credentials, cookies, chat text and browsing URLs by default.",
+    "validation": "Inspect exported data from authenticated browsing and signing flows; ensure redaction is preserved and export is user initiated.",
+    "sources": [
+      "embedded/tahoe/Settings.swift",
+      "embedded/tahoe/Dialogs.swift",
+      "Engine.lock.json"
+    ]
+  },
+  {
+    "id": "R093",
+    "domain": "Settings, onboarding, assets and release clarity",
+    "priority": "P2",
+    "kind": "Candidate",
+    "effort": "M",
+    "title": "Bound photo and icon preparation work",
+    "finding": "The photo picker loads full data before applying its size limit, and icon PNG encoding/writing can occur on the main actor. File-import paths already inspect metadata earlier.",
+    "recommendation": "Use transferable file representations or metadata-first checks, downsample before decode, and perform image preparation off the interaction path with a cancellation token.",
+    "validation": "Select a very large photo, cancel halfway through and rapidly replace an icon; memory stays bounded and the newest selection wins.",
+    "sources": [
+      "embedded/tahoe/WallpaperPhoto.swift",
+      "embedded/tahoe/WebIconEditor.swift",
+      "embedded/tahoe/Artwork.swift"
+    ]
+  },
+  {
+    "id": "R094",
+    "domain": "Settings, onboarding, assets and release clarity",
+    "priority": "P3",
+    "kind": "Addition",
+    "effort": "M",
+    "title": "Add a focused command palette",
+    "finding": "Menus and Spotlight cover many actions, but a searchable action surface would help users learn shortcuts and reach less visible window commands.",
+    "recommendation": "Add commands for the active context, showing disabled reasons and shortcuts. Reuse the command router instead of inventing a second action implementation.",
+    "validation": "Find Split Chat, Move to Space, Downloads and Browser Settings by keyboard; commands must target the visible owner.",
+    "sources": [
+      "embedded/tahoe/Overlays.swift",
+      "embedded/tahoe/MenuBar.swift",
+      "embedded/tahoe/Keyboard.swift"
+    ]
+  },
+  {
+    "id": "R095",
+    "domain": "Settings, onboarding, assets and release clarity",
+    "priority": "P3",
+    "kind": "Addition",
+    "effort": "L",
+    "title": "Evaluate optional offline utilities",
+    "finding": "The approved Notes/Calculator experiences use web services; an unused calculator model is not evidence of a shipped native calculator or Notes editor.",
+    "recommendation": "If desired, add a small offline scratchpad or calculator alongside the current web apps, with clear naming and local storage/export. Do not silently replace the existing choices.",
+    "validation": "Use the optional utility offline, export its data and verify upgrade/migration behavior.",
+    "sources": [
+      "embedded/tahoe/Applications.swift",
+      "embedded/tahoe/Persistence.swift"
+    ]
+  },
+  {
+    "id": "R096",
+    "domain": "Settings, onboarding, assets and release clarity",
+    "priority": "P3",
+    "kind": "Addition",
+    "effort": "L",
+    "title": "Evaluate a real agenda integration",
+    "finding": "The calendar is a useful date surface but is not a full event/calendar app.",
+    "recommendation": "An optional EventKit-backed agenda could add upcoming events with explicit permission and clear read/write capabilities; keep basic date selection independent of permission.",
+    "validation": "Test denied permission, multiple calendars, timezone changes and revoked access without breaking the basic calendar.",
+    "sources": [
+      "embedded/tahoe/Calendar.swift"
+    ]
+  },
+  {
+    "id": "R097",
+    "domain": "Settings, onboarding, assets and release clarity",
+    "priority": "P3",
+    "kind": "Addition",
+    "effort": "L",
+    "title": "Design a SideOS-aware update channel",
+    "finding": "The upstream update checker is disabled in the embedded build, so it is not currently sending users to the wrong upstream update. A dedicated SideOS update experience is still absent.",
+    "recommendation": "Expose a release channel and version manifest linked to authorized distribution. Private artifacts need an appropriate user-authenticated path or release feed; never embed a GitHub token in the app.",
+    "validation": "Test unavailable releases, expired artifacts, wrong channels and downgrade checks; show the installed build next to the candidate build.",
+    "sources": [
+      "Engine.lock.json",
+      "embedded/tahoe/Settings.swift",
+      ".github/workflows/private-build.yml"
+    ]
+  },
+  {
+    "id": "R098",
+    "domain": "Settings, onboarding, assets and release clarity",
+    "priority": "P3",
+    "kind": "Architecture",
+    "effort": "XL",
+    "title": "Consider a constrained resource-update loader",
+    "finding": "The ChatGPT adapter is embedded in Swift today, so even JavaScript edits need a host rebuild and IPA. Native Swift/entitlement/runtime changes inherently still need a new app build.",
+    "recommendation": "Only if adapter iteration justifies the complexity, move a deliberately limited adapter resource into a verified versioned loader with minimum-host compatibility, last-known-good rollback and an explicit update policy. Preserve origin restrictions and distribution rules.",
+    "validation": "Reject incompatible or corrupted bundles, recover offline and roll back a broken adapter. Keep credentials out of update assets and do not present this as native-code hot reload.",
+    "sources": [
+      "embedded/tahoe/ChatGPTPageScript.swift",
+      "embedded/tahoe/ChatWorkspace.swift",
+      "AGENTS.md"
+    ]
+  },
+  {
+    "id": "R099",
+    "domain": "Code structure, testing and GitHub Actions efficiency",
+    "priority": "P2",
+    "kind": "Architecture",
+    "effort": "L",
+    "title": "Split Browser by responsibility",
+    "finding": "Browser.swift is approximately 1,310 lines combining WebKit lifecycle, navigation policy, sessions, dialogs, identity requests and SwiftUI navigation chrome.",
+    "recommendation": "Extract a page runtime, session model, navigation policy and browser chrome through small behavior-preserving seams. Keep profile ownership and restore scheduling explicit.",
+    "validation": "Retain the current core/DOM checks and device smoke flows after each extraction; do not combine this with a broad visual rewrite.",
+    "sources": [
+      "embedded/tahoe/Browser.swift",
+      "embedded/tahoe/PageRestoration.swift"
+    ]
+  },
+  {
+    "id": "R100",
+    "domain": "Code structure, testing and GitHub Actions efficiency",
+    "priority": "P2",
+    "kind": "Architecture",
+    "effort": "L",
+    "title": "Reduce singleton coupling with scoped services",
+    "finding": "Workspace, preferences, keyboard and menus rely heavily on global shared instances, making ownership and isolated tests harder.",
+    "recommendation": "Inject scene/workspace command, presentation and persistence services at the desktop boundary. Keep a compatibility facade while migrating individual features.",
+    "validation": "Instantiate two independent workspaces in a test harness without shared menu/dialog state, then verify the production single-scene behavior remains unchanged.",
+    "sources": [
+      "embedded/tahoe/Workspace.swift",
+      "embedded/tahoe/Preferences.swift",
+      "embedded/tahoe/Keyboard.swift",
+      "embedded/tahoe/Menus.swift"
+    ]
+  },
+  {
+    "id": "R101",
+    "domain": "Code structure, testing and GitHub Actions efficiency",
+    "priority": "P2",
+    "kind": "Architecture",
+    "effort": "M",
+    "title": "Use typed resource and command identities",
+    "finding": "String IDs and browser-kind checks are repeated across Dock, app launch, windows and persistence, contributing to inconsistent grouping.",
+    "recommendation": "Introduce small typed AppIdentity, WindowIdentity and command contexts rather than a large new framework; use one resolver for app display/icon/launch behavior.",
+    "validation": "Run the same launch/focus/close sequence for a normal browser, pinned web app and guest app and assert consistent identity.",
+    "sources": [
+      "embedded/tahoe/Workspace.swift",
+      "embedded/tahoe/Dock.swift",
+      "embedded/tahoe/Applications.swift"
+    ]
+  },
+  {
+    "id": "R102",
+    "domain": "Code structure, testing and GitHub Actions efficiency",
+    "priority": "P2",
+    "kind": "Confirmed",
+    "effort": "S",
+    "title": "Cover packaging changes in cheap CI triggers",
+    "finding": "The Linux workflow watches embedded/tahoe/** but omits packaging scripts such as embedded/package.py and embedded/prepare_livecontainer.py.",
+    "recommendation": "Include relevant packaging paths and add cheap contract checks for their inputs/outputs. Keep Mac compilation manual or on the fixed device branch.",
+    "validation": "Change only a packaging script and verify that Linux checks run while no device build starts.",
+    "sources": [
+      ".github/workflows/checks.yml",
+      "embedded/package.py",
+      "embedded/prepare_livecontainer.py"
+    ]
+  },
+  {
+    "id": "R103",
+    "domain": "Code structure, testing and GitHub Actions efficiency",
+    "priority": "P2",
+    "kind": "Candidate",
+    "effort": "M",
+    "title": "Fingerprint exact build recipes without unrelated workflow churn",
+    "finding": "Binary cache keys correctly include exact source/toolchain inputs, but hashing the whole workflow can invalidate compiled products for artifact-only workflow edits.",
+    "recommendation": "Move product build recipes into scripts and hash exact recipe/toolchain/source inputs. Keep independent host/JIT/FFI/installer caches and never use a partial-prefix binary hit.",
+    "validation": "Verify artifact naming changes keep product cache hits, while compiler flags, source, SDK or recipe changes force the appropriate miss.",
+    "sources": [
+      ".github/workflows/private-build.yml",
+      "docs/build-efficiency.md",
+      "AGENTS.md"
+    ]
+  },
+  {
+    "id": "R104",
+    "domain": "Code structure, testing and GitHub Actions efficiency",
+    "priority": "P3",
+    "kind": "Candidate",
+    "effort": "S",
+    "title": "Avoid redundant cheap checks only with same-SHA evidence",
+    "finding": "Main pushes and a requested IPA can both run Linux validation. This duplication is much smaller than native build cost and should not be removed at the expense of a clear gate.",
+    "recommendation": "If useful, reuse a successful exact-SHA checks result before native compilation; otherwise retain the inexpensive reliable duplicate.",
+    "validation": "Never accept a result from another commit, skip a missing result or bypass a failed check.",
+    "sources": [
+      ".github/workflows/checks.yml",
+      ".github/workflows/private-build.yml"
+    ]
+  },
+  {
+    "id": "R105",
+    "domain": "Code structure, testing and GitHub Actions efficiency",
+    "priority": "P2",
+    "kind": "Candidate",
+    "effort": "M",
+    "title": "Triage compiler warnings and prevent new ones",
+    "finding": "The successful native build still reports actor-isolation warnings and the nearly-matching drag delegate. Build success alone therefore misses meaningful integration issues.",
+    "recommendation": "Fix actionable warnings in shell code, record upstream exceptions and gate new warnings against a reviewed baseline. Avoid globally treating inherited upstream warnings as errors immediately.",
+    "validation": "Confirm the wrong delegate warning disappears and a deliberately introduced shell warning is detected without flooding reviewers with unchanged upstream output.",
+    "sources": [
+      "embedded/tahoe/ChatWorkspace.swift",
+      ".github/workflows/private-build.yml"
+    ]
+  },
+  {
+    "id": "R106",
+    "domain": "Code structure, testing and GitHub Actions efficiency",
+    "priority": "P2",
+    "kind": "Addition",
+    "effort": "M",
+    "title": "Expand tests around lifecycle contracts rather than implementation mirrors",
+    "finding": "Portable model tests and 22 DOM fixtures are useful, but aggregate close protection, oversized sessions, clipboard races and several presentation lifecycles are not covered by the current suite.",
+    "recommendation": "Add focused regression cases as each confirmed defect is fixed, using controlled time/actors and observable behavior. Keep the actual restore driver tests rather than testing only a copied queue model.",
+    "validation": "Each new test should fail for the corresponding pre-fix behavior and avoid depending on private implementation order.",
+    "sources": [
+      "tools/test-core.sh",
+      "embedded/tahoe/PageRestorationTests.swift",
+      "tools/test-chatgpt-workspace.cjs"
+    ]
+  },
+  {
+    "id": "R107",
+    "domain": "Code structure, testing and GitHub Actions efficiency",
+    "priority": "P2",
+    "kind": "Addition",
+    "effort": "M",
+    "title": "Create a physical-device release checklist",
+    "finding": "A device IPA compile verifies UIKit/WebKit integration but does not validate scrolling, hover, memory, JIT or authenticated site behavior. The user explicitly excludes simulator/preview builds.",
+    "recommendation": "Maintain a short repeatable manual matrix for cold/warm restore, backgrounding, drag cancellation, drafts, split typing, file jobs, downloads and guests. Attach build identity and device/OS to results.",
+    "validation": "Run it for release candidates on actual hardware and compare the same recordings rather than claiming performance from a compressed clip alone.",
+    "sources": [
+      "tools/test-native.sh",
+      ".github/workflows/private-build.yml",
+      "docs/automatic-tab-restoration.md"
+    ]
+  },
+  {
+    "id": "R108",
+    "domain": "Code structure, testing and GitHub Actions efficiency",
+    "priority": "P2",
+    "kind": "Architecture",
+    "effort": "M",
+    "title": "Publish the actual validation and dependency boundary",
+    "finding": "The private overlay is small enough for a broad source audit; the pinned engine and native dependencies are much larger. Portable tests include some legacy model coverage that is not a shipped feature.",
+    "recommendation": "Document which production behavior is covered by Linux, DOM fixtures, native compilation and device testing, and record exact dependency revisions and update decisions.",
+    "validation": "Every claimed feature and validation method should point to shipped source or an executed check; no implied full third-party security audit.",
+    "sources": [
+      "Engine.lock.json",
+      "SOURCE-COVERAGE.md",
+      "tools/test-core.sh"
+    ]
+  },
+  {
+    "id": "R109",
+    "domain": "Code structure, testing and GitHub Actions efficiency",
+    "priority": "P3",
+    "kind": "Candidate",
+    "effort": "M",
+    "title": "Review packaged source/notices deliberately",
+    "finding": "Packaging copies source and notices into EmbeddedSourceNotices, including material that may not be needed at runtime. This is intentional packaging behavior, not evidence of data exfiltration.",
+    "recommendation": "Measure artifact contribution, preserve required license/source obligations and document exactly what ships. Prune development-only files only after those requirements are understood.",
+    "validation": "Compare IPA contents and size before/after a reviewed packaging change; ensure required acknowledgments and source notices remain accessible.",
+    "sources": [
+      "embedded/package.py",
+      "embedded/tahoe/Notices/ExistingIconArtwork.txt"
+    ]
+  },
+  {
+    "id": "R110",
+    "domain": "Code structure, testing and GitHub Actions efficiency",
+    "priority": "P2",
+    "kind": "Architecture",
+    "effort": "M",
+    "title": "Preserve pinned-engine integration contracts",
+    "finding": "The pinned runtime already has useful signing identity checks, refresh leases, redaction and background FFI queues. Broad shell cleanup must not inadvertently bypass them.",
+    "recommendation": "Keep the shell behind a narrow host facade, maintain patch anchor assertions and review upstream updates as compatibility changes. Test contracts before adopting a new pin.",
+    "validation": "Validate signing/team selection, refresh mutual exclusion, launch handoff and redacted errors against the exact new revision before requesting an IPA.",
+    "sources": [
+      "Engine.lock.json",
+      "embedded/tahoe/patch.py",
+      "tools/overlay-engine.py"
+    ]
+  },
+  {
+    "id": "R111",
+    "domain": "Privacy, trust and native-material coherence",
+    "priority": "P2",
+    "kind": "Addition",
+    "effort": "S",
+    "title": "Expose search-suggestion and provider choices",
+    "finding": "Google suggestions already use an ephemeral cookie-free session, suppress likely addresses and disable remote requests in Private browsing. Normal search terms are still sent to Google while typing, without a dedicated setting in Browser Settings.",
+    "recommendation": "Explain this briefly beside a Suggestions switch, and optionally offer a default search-provider choice. Preserve immediate local Search behavior when remote suggestions are disabled or unavailable.",
+    "validation": "Disable suggestions and verify no suggestion requests occur; switch to Private mid-request and confirm cancellation and cleared predictions.",
+    "sources": [
+      "embedded/tahoe/BrowserSuggestions.swift",
+      "embedded/tahoe/Settings.swift",
+      "embedded/tahoe/Address.swift"
+    ]
+  },
+  {
+    "id": "R112",
+    "domain": "Privacy, trust and native-material coherence",
+    "priority": "P2",
+    "kind": "Addition",
+    "effort": "M",
+    "title": "Keep bridge-origin restrictions under regression test",
+    "finding": "The native ChatGPT bridge already checks the main frame, exact HTTPS origin/port and matching WKWebView, and the adapter uses an isolated content world. Saved chat state intentionally excludes message bodies, drafts and titles.",
+    "recommendation": "Preserve these boundaries with native contract coverage for iframe messages, lookalike hosts, wrong ports, stale views and unsupported routes. Keep geometry/title/status payloads bounded as the adapter grows.",
+    "validation": "Prove rejected messages cannot open, close, split or detach pages and that exported/restored chat state contains only approved URL/layout metadata.",
+    "sources": [
+      "embedded/tahoe/ChatWorkspace.swift",
+      "embedded/tahoe/ChatWorkspaceState.swift",
+      "embedded/tahoe/Browser.swift"
+    ]
+  },
+  {
+    "id": "R113",
+    "domain": "Privacy, trust and native-material coherence",
+    "priority": "P2",
+    "kind": "Addition",
+    "effort": "M",
+    "title": "Provide clear local-data and backup controls",
+    "finding": "The app owns session URLs, preferences, downloads and icon/wallpaper files, while profile website stores have separate lifetimes. Users need to understand what Clear or Reset will remove.",
+    "recommendation": "Add a storage view with per-category cleanup and an optional user-initiated settings/layout export. Exclude credentials, cookies and Private addresses; validate imports before replacing the current workspace.",
+    "validation": "Export/import a supported layout, reject malformed input, and verify cleaning browsing metadata does not delete downloaded documents accidentally.",
+    "sources": [
+      "embedded/tahoe/Persistence.swift",
+      "embedded/tahoe/Preferences.swift",
+      "embedded/tahoe/Settings.swift",
+      "embedded/tahoe/Downloads.swift"
+    ]
+  },
+  {
+    "id": "R114",
+    "domain": "Privacy, trust and native-material coherence",
+    "priority": "P2",
+    "kind": "Addition",
+    "effort": "S",
+    "title": "Make website identity inspectable",
+    "finding": "Compact host presentation is useful, but the user also needs a straightforward way to inspect the full origin/URL and the active profile when a page requests trust.",
+    "recommendation": "Offer a compact site information panel with copyable full URL, secure-origin context and profile identity, linked to permissions/data controls. Keep website-supplied titles visually separate from origin.",
+    "validation": "Check long hosts, internationalized domains, redirects, non-default ports and similarly titled sites; never infer trust solely from a favicon or title.",
+    "sources": [
+      "embedded/tahoe/Browser.swift",
+      "embedded/tahoe/Authentication.swift"
+    ]
+  },
+  {
+    "id": "R115",
+    "domain": "Privacy, trust and native-material coherence",
+    "priority": "P2",
+    "kind": "Candidate",
+    "effort": "M",
+    "title": "Refine native glass hierarchy rather than adding optical layers",
+    "finding": "The current project already uses glassEffect, interactive glass and GlassEffectContainer. Outer tabs each receive a pill material, with relatively small selected/unselected tint differences; the old all-blue screenshot does not establish that the current source still has that styling defect.",
+    "recommendation": "Compare the current build on device and tune shared grouping, spacing, neutral foregrounds and selected emphasis. Keep only the selected tab visually primary and use system interaction for optical response. Do not promise identical pointer deformation across all iPadOS devices or future Safari versions.",
+    "validation": "Capture current light/dark, hover, press, selected, inactive-window and reduced-transparency states; check that one selected tab remains unambiguous and touch interaction stays clear.",
+    "sources": [
+      "embedded/tahoe/Tabs.swift",
+      "embedded/tahoe/Design.swift",
+      "embedded/tahoe/Browser.swift"
+    ]
+  }
+]

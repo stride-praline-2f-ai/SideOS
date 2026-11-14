@@ -1,0 +1,549 @@
+diff --git a/rust-core/Cargo.toml b/rust-core/Cargo.toml
+index 3876863..307947a 100644
+--- a/rust-core/Cargo.toml
++++ b/rust-core/Cargo.toml
+@@ -71,7 +71,7 @@ idevice-ffi = { path = "vendor/idevice-ffi", default-features = false, features
+ # off: it would pull a second idevice from crates.io for code we never call (the
+ # vendored copy gates its idevice uses behind it — vendor/isideload/README.md,
+ # change 15). `fs-storage` avoids keyring.
+-isideload = { git = "https://github.com/nab138/isideload.git", package = "isideload", default-features = false, features = [
++isideload = { git = "https://github.com/nab138/isideload.git", rev = "e319d931aa3f9d97fbd132149a3916dcd5c71f09", package = "isideload", default-features = false, features = [
+   "fs-storage",
+ ] }
+ 
+@@ -106,7 +106,7 @@ p12-keystore = { version = "0.3.0-rc4", package = "isideload-p12-keystore" }
+ pkcs12 = "0.2.0-pre.0"
+ der = { version = "0.8", features = ["oid"] }
+ x509-cert = "0.3"
+-rsa = "0.9.10"
++rsa = "0.10"
+ 
+ # Logging spine: forward idevice's `tracing` events (and any `log` records via
+ # the tracing-log compat layer, enabled by default) through the FFI callback.
+@@ -141,6 +141,7 @@ isideload = { path = "vendor/isideload" }
+ # sealed as plain files with its executable left unsigned. Vendored to sign
+ # those too — see vendor/apple-codesign-quick/README.md.
+ [patch.crates-io]
++srp = { path = "vendor/srp" }
+ apple-codesign-quick = { path = "vendor/apple-codesign-quick" }
+ 
+ [profile.release]
+diff --git a/rust-core/vendor/apple-codesign-quick/Cargo.toml b/rust-core/vendor/apple-codesign-quick/Cargo.toml
+index 5bb3992..822a912 100644
+--- a/rust-core/vendor/apple-codesign-quick/Cargo.toml
++++ b/rust-core/vendor/apple-codesign-quick/Cargo.toml
+@@ -37,19 +37,15 @@ path = "src/main.rs"
+ version = "1.5"
+ 
+ [dependencies.cms]
+-version = "0.2.3"
+-features = [
+-    "builder",
+-    "rsa",
+-    "sha2",
+-]
++version = "0.3.0-rc.2"
++features = ["builder"]
+ 
+ [dependencies.const-oid]
+-version = "0.9.6"
++version = "0.10"
+ features = ["db"]
+ 
+ [dependencies.der]
+-version = "0.7.10"
++version = "0.8"
+ features = [
+     "alloc",
+     "derive",
+@@ -60,7 +56,7 @@ features = [
+ version = "0.9"
+ 
+ [dependencies.pem-rfc7468]
+-version = "0.7"
++version = "1"
+ features = ["alloc"]
+ 
+ [dependencies.plist]
+@@ -70,8 +66,8 @@ version = "1"
+ version = "1.12"
+ 
+ [dependencies.rsa]
+-version = "0.9.9"
+-features = ["sha2"]
++version = "0.10"
++
+ 
+ [dependencies.sha1]
+ version = "0.11.0"
+@@ -84,10 +80,10 @@ version = "0.10"
+ package = "sha2"
+ 
+ [dependencies.spki]
+-version = "0.7.3"
++version = "0.8"
+ 
+ [dependencies.thiserror]
+ version = "2"
+ 
+ [dependencies.x509-cert]
+-version = "0.2.5"
++version = "0.3"
+diff --git a/rust-core/vendor/apple-codesign-quick/src/lib.rs b/rust-core/vendor/apple-codesign-quick/src/lib.rs
+index b0e806d..f343963 100644
+--- a/rust-core/vendor/apple-codesign-quick/src/lib.rs
++++ b/rust-core/vendor/apple-codesign-quick/src/lib.rs
+@@ -14,3 +14,6 @@ pub use macho::{
+ pub use provisioning::ProvisioningProfile;
+ pub use rustcrypto_cms::RustCryptoCmsSigner;
+ pub use signature::{CmsSigner, CmsSigningRequest, EncodedCodeDirectory, HashAlgorithm};
++
++#[cfg(test)]
++mod sideos_fixture;
+diff --git a/rust-core/vendor/apple-codesign-quick/src/rustcrypto_cms.rs b/rust-core/vendor/apple-codesign-quick/src/rustcrypto_cms.rs
+index d57c897..dfda992 100644
+--- a/rust-core/vendor/apple-codesign-quick/src/rustcrypto_cms.rs
++++ b/rust-core/vendor/apple-codesign-quick/src/rustcrypto_cms.rs
+@@ -24,7 +24,7 @@ const APPLE_CODE_DIRECTORY_DIGEST_OID: ObjectIdentifier =
+ const APPLE_WWDR_G3_CERTIFICATE_DER: &[u8] = include_bytes!("../assets/AppleWWDRCAG3.cer");
+ const APPLE_ROOT_CERTIFICATE_DER: &[u8] = include_bytes!("../assets/AppleIncRootCertificate.cer");
+ 
+-type RsaSha256SigningKey = SigningKey<sha2_010::Sha256>;
++type RsaSha256SigningKey = SigningKey<sha2::Sha256>;
+ 
+ /// CMS signer for Apple Code Signing using RustCrypto's CMS/DER/X.509 crates.
+ ///
+@@ -127,11 +127,10 @@ impl CmsSigner for RustCryptoCmsSigner {
+         let digest_algorithm = sha256_algorithm_identifier();
+         let signer_identifier = signer_identifier(&self.signer_certificate);
+         let mut signer_info = SignerInfoBuilder::new(
+-            &self.signing_key,
+             signer_identifier,
+             digest_algorithm.clone(),
+             &encapsulated_content_info,
+-            Some(&message_digest),
++            Some(message_digest.as_slice()),
+         )
+         .map_err(cms_builder_error)?;
+ 
+@@ -158,7 +157,7 @@ impl CmsSigner for RustCryptoCmsSigner {
+             &self.certificate_chain,
+         )?;
+         builder
+-            .add_signer_info::<RsaSha256SigningKey, rsa::pkcs1v15::Signature>(signer_info)
++            .add_signer_info::<RsaSha256SigningKey, rsa::pkcs1v15::Signature>(signer_info, &self.signing_key)
+             .map_err(cms_builder_error)?;
+ 
+         let content_info = builder.build().map_err(cms_builder_error)?;
+@@ -169,7 +168,7 @@ impl CmsSigner for RustCryptoCmsSigner {
+ #[derive(Sequence)]
+ struct AppleCodeDirectoryDigest<'a> {
+     algorithm: DerObjectIdentifier,
+-    digest: OctetStringRef<'a>,
++    digest: &'a OctetStringRef,
+ }
+ 
+ fn decode_rsa_private_key(der: &[u8]) -> Result<RsaPrivateKey> {
+@@ -193,17 +192,17 @@ fn certificate_chain_for_signer(
+     signer_certificate: &Certificate,
+     certificate_candidates: &[Certificate],
+ ) -> Result<Vec<Certificate>> {
+-    if signer_certificate.tbs_certificate.subject == signer_certificate.tbs_certificate.issuer {
++    if signer_certificate.tbs_certificate().subject() == signer_certificate.tbs_certificate().issuer() {
+         return Ok(Vec::new());
+     }
+ 
+-    let mut issuer = signer_certificate.tbs_certificate.issuer.clone();
++    let mut issuer = signer_certificate.tbs_certificate().issuer().clone();
+     let mut certificate_chain = Vec::new();
+ 
+     loop {
+         let certificate = certificate_candidates
+             .iter()
+-            .find(|candidate| candidate.tbs_certificate.subject == issuer)
++            .find(|candidate| candidate.tbs_certificate().subject() == &issuer)
+             .ok_or_else(|| {
+                 cms_error(format!(
+                     "missing issuer certificate {issuer} for the code-signing certificate chain"
+@@ -215,8 +214,8 @@ fn certificate_chain_for_signer(
+             return Err(cms_error("certificate chain contains a cycle"));
+         }
+ 
+-        let is_root = certificate.tbs_certificate.subject == certificate.tbs_certificate.issuer;
+-        issuer = certificate.tbs_certificate.issuer.clone();
++        let is_root = certificate.tbs_certificate().subject() == certificate.tbs_certificate().issuer();
++        issuer = certificate.tbs_certificate().issuer().clone();
+         certificate_chain.push(certificate);
+ 
+         if is_root {
+@@ -268,8 +267,8 @@ fn signing_time_attribute(signing_time: SystemTime) -> Result<Attribute> {
+ 
+ fn signer_identifier(certificate: &Certificate) -> SignerIdentifier {
+     SignerIdentifier::IssuerAndSerialNumber(IssuerAndSerialNumber {
+-        issuer: certificate.tbs_certificate.issuer.clone(),
+-        serial_number: certificate.tbs_certificate.serial_number.clone(),
++        issuer: certificate.tbs_certificate().issuer().clone(),
++        serial_number: certificate.tbs_certificate().serial_number().clone(),
+     })
+ }
+ 
+@@ -418,7 +417,7 @@ mod tests {
+         assert_eq!(attribute.oid, APPLE_CODE_DIRECTORY_HASHES_OID);
+ 
+         let value = attribute.values.get(0).unwrap();
+-        let plist_xml = OctetStringRef::from_der(value.to_der().unwrap().as_slice())
++        let plist_xml = <&OctetStringRef>::from_der(value.to_der().unwrap().as_slice())
+             .unwrap()
+             .as_bytes()
+             .to_vec();
+diff --git a/rust-core/vendor/idevice/Cargo.toml b/rust-core/vendor/idevice/Cargo.toml
+index 35dd997..f971843 100644
+--- a/rust-core/vendor/idevice/Cargo.toml
++++ b/rust-core/vendor/idevice/Cargo.toml
+@@ -11,6 +11,7 @@ keywords = ["lockdownd", "ios"]
+ 
+ 
+ [dependencies]
++rand_core06 = { package = "rand_core", version = "0.6", features = ["getrandom"] }
+ tokio = { version = "1", features = ["io-util", "time"] }
+ tokio-rustls = { version = "0.26", default-features = false, optional = true }
+ rustls = { version = "0.23", default-features = false, features = [
+@@ -47,8 +48,8 @@ async-stream = { version = "0.3.6", optional = true }
+ 
+ sha2 = { version = "0.10", optional = true, features = ["oid"] }
+ 
+-rsa = { version = "0.9", optional = true, features = ["sha2"] }
+-x509-cert = { version = "0.2", optional = true, features = [
++rsa = { version = "0.10", optional = true }
++x509-cert = { version = "0.3", optional = true, features = [
+   "builder",
+   "pem",
+ ], default-features = false }
+diff --git a/rust-core/vendor/idevice/src/ca.rs b/rust-core/vendor/idevice/src/ca.rs
+index 3b66b64..af2825d 100644
+--- a/rust-core/vendor/idevice/src/ca.rs
++++ b/rust-core/vendor/idevice/src/ca.rs
+@@ -9,10 +9,10 @@ use rsa::{
+     pkcs1v15::SigningKey,
+     pkcs8::{EncodePrivateKey, LineEnding, SubjectPublicKeyInfo},
+ };
+-use sha2::Sha256;
++use rsa::sha2::Sha256;
+ use x509_cert::{
+     Certificate,
+-    builder::{Builder, CertificateBuilder, Profile},
++    builder::{Builder, CertificateBuilder},
+     der::{EncodePem, asn1::GeneralizedTime},
+     name::Name,
+     serial_number::SerialNumber,
+@@ -48,26 +48,24 @@ pub fn make_cert(
+         .duration_since(web_time::UNIX_EPOCH)
+         .map_err(|e| format!("system time before unix epoch: {e}"))?;
+     let then_unix = now_unix + lifetime;
+-    let validity = Validity {
+-        not_before: Time::GeneralTime(GeneralizedTime::from_unix_duration(now_unix)?),
+-        not_after: Time::GeneralTime(GeneralizedTime::from_unix_duration(then_unix)?),
+-    };
++    let validity = Validity::new(
++        Time::GeneralTime(GeneralizedTime::from_unix_duration(now_unix)?),
++        Time::GeneralTime(GeneralizedTime::from_unix_duration(then_unix)?),
++    );
+ 
+     let signing_key = SigningKey::<Sha256>::new(signing_key.clone());
+-    let public_key = SubjectPublicKeyInfo::from_key(public_key.clone())?;
++    let public_key = SubjectPublicKeyInfo::from_key(public_key)?;
+ 
+     // Build certificate
+     let cert = CertificateBuilder::new(
+-        Profile::Root,
++        PairingRoot(name),
+         SerialNumber::new(&[1])?,
+         validity,
+-        name,
+         public_key,
+-        &signing_key,
+     )?;
+ 
+     // Sign the certificate
+-    let tbs_cert = cert.build()?;
++    let tbs_cert = cert.build(&signing_key)?;
+ 
+     Ok(tbs_cert)
+ }
+@@ -90,7 +88,7 @@ pub(crate) fn generate_certificates(
+     let private_key = match private_key {
+         Some(p) => p,
+         None => {
+-            let mut rng = rsa::rand_core::OsRng;
++            let mut rng = rand::rng();
+             RsaPrivateKey::new(&mut rng, 2048)?
+         }
+     };
+@@ -111,3 +109,19 @@ pub(crate) fn generate_certificates(
+             .to_vec(),
+     })
+ }
++
++// Preserve the existing local pairing certificate profile. Public CA naming
++// requirements must not change Apple's empty/CN-only pairing certificates.
++struct PairingRoot(Name);
++impl x509_cert::builder::profile::BuilderProfile for PairingRoot {
++    fn get_issuer(&self, subject: &Name) -> Name { subject.clone() }
++    fn get_subject(&self) -> Name { self.0.clone() }
++    fn build_extensions(&self, key: x509_cert::spki::SubjectPublicKeyInfoRef<'_>, _issuer: x509_cert::spki::SubjectPublicKeyInfoRef<'_>, tbs: &x509_cert::TbsCertificate) -> x509_cert::builder::Result<Vec<x509_cert::ext::Extension>> {
++        use x509_cert::ext::{ToExtension, pkix::{SubjectKeyIdentifier, BasicConstraints, KeyUsage, KeyUsages}};
++        let mut extensions = Vec::new();
++        extensions.push(SubjectKeyIdentifier::try_from(key)?.to_extension(tbs.subject(), &extensions)?);
++        extensions.push(BasicConstraints { ca: true, path_len_constraint: None }.to_extension(tbs.subject(), &extensions)?);
++        extensions.push(KeyUsage(KeyUsages::KeyCertSign | KeyUsages::CRLSign).to_extension(tbs.subject(), &extensions)?);
++        Ok(extensions)
++    }
++}
+diff --git a/rust-core/vendor/idevice/src/remote_pairing/mod.rs b/rust-core/vendor/idevice/src/remote_pairing/mod.rs
+index 2578fa7..123dac3 100644
+--- a/rust-core/vendor/idevice/src/remote_pairing/mod.rs
++++ b/rust-core/vendor/idevice/src/remote_pairing/mod.rs
+@@ -14,7 +14,8 @@ use idevice_srp::{client::SrpClient, groups::G_3072};
+ use plist_macro::plist;
+ use plist_macro::{PlistConvertible, PlistExt};
+ use rand::Rng as _;
+-use rsa::{rand_core::OsRng, signature::SignerMut};
++use rand_core06::OsRng;
++use ed25519_dalek::Signer;
+ use serde::Serialize;
+ use sha2::Sha512;
+ use tracing::{debug, warn};
+diff --git a/rust-core/vendor/idevice/src/remote_pairing/responder.rs b/rust-core/vendor/idevice/src/remote_pairing/responder.rs
+index 296ef77..1710447 100644
+--- a/rust-core/vendor/idevice/src/remote_pairing/responder.rs
++++ b/rust-core/vendor/idevice/src/remote_pairing/responder.rs
+@@ -21,7 +21,7 @@ use idevice_srp::{client::SrpClient, groups::G_3072, server::SrpServer};
+ use plist::Value;
+ use plist_macro::{PlistExt, plist};
+ use rand::{Rng as _, RngExt as _};
+-use rsa::signature::SignerMut as _;
++use ed25519_dalek::Signer as _;
+ use sha2::Sha512;
+ use tracing::{debug, warn};
+ 
+diff --git a/rust-core/vendor/idevice/src/remote_pairing/rp_pairing_file.rs b/rust-core/vendor/idevice/src/remote_pairing/rp_pairing_file.rs
+index 1ac87c4..3f8af71 100644
+--- a/rust-core/vendor/idevice/src/remote_pairing/rp_pairing_file.rs
++++ b/rust-core/vendor/idevice/src/remote_pairing/rp_pairing_file.rs
+@@ -6,7 +6,7 @@ use std::path::Path;
+ use ed25519_dalek::{SigningKey, VerifyingKey};
+ use plist::Dictionary;
+ use plist_macro::plist_to_xml_bytes;
+-use rsa::rand_core::OsRng;
++use rand_core06::OsRng;
+ use serde::de::Error;
+ use tracing::{debug, warn};
+ 
+diff --git a/rust-core/vendor/isideload/Cargo.toml b/rust-core/vendor/isideload/Cargo.toml
+index 0d79526..3dd80bc 100644
+--- a/rust-core/vendor/isideload/Cargo.toml
++++ b/rust-core/vendor/isideload/Cargo.toml
+@@ -20,6 +20,9 @@ fs-storage = []
+ # Once that becomes stable, hopefuly duplicate dependencies should clean up.\
+ # Until then, I will wince in pain every time I see how long the output of cargo tree -d is.
+ [dependencies]
++tempfile = "3"
++libc = "0.2"
++rand10 = { package = "rand", version = "0.10" }
+ idevice = { version = "0.1.61", optional = true, features = ["afc", "installation_proxy", "remote_pairing", "rsd"]}
+ plist = "1.8"
+ plist-macro = "0.1.4"
+@@ -43,13 +46,13 @@ hmac = "0.13.0"
+ cbc = { version = "0.2.0", features = ["alloc"] }
+ aes = "0.9.0"
+ aes-gcm = "0.11.0-rc.3"
+-rsa = { version = "0.9.10" }
++rsa = { version = "0.10" }
+ tokio = { version = "1.49.0", features = ["fs", "rt-multi-thread", "time"] }
+ keyring = { version = "3.6.3", features = ["apple-native", "linux-native-sync-persistent", "windows-native"], optional = true }
+-x509-cert = "0.2.5"
++x509-cert = "0.3"
+ rcgen = { version = "0.14.7", default-features = false, features = ["aws_lc_rs", "pem"] }
+ p12-keystore = { version = "0.3.0-rc4", package = "isideload-p12-keystore" }
+-zip = { version = "8.3", default-features = false, features = ["deflate"] }
++zip = { version = "9.0", default-features = false, features = ["deflate"] }
+ apple-codesign-quick = "0.1.0"
+ sha1 = "0.11.0"
+ 
+diff --git a/rust-core/vendor/isideload/src/sideload/application.rs b/rust-core/vendor/isideload/src/sideload/application.rs
+index 76676d9..0eb12c6 100644
+--- a/rust-core/vendor/isideload/src/sideload/application.rs
++++ b/rust-core/vendor/isideload/src/sideload/application.rs
+@@ -16,13 +16,15 @@ use std::path::PathBuf;
+ use tokio::io::AsyncWriteExt;
+ use tracing::{info, warn};
+ use zip::ZipArchive;
++#[path = "safe_extract.rs"]
++mod safe_extract;
+ 
+ /// Where AltStore looks for its pairing file (`Bundle.pairingFileURL`).
+ const ALT_PAIRING_FILE: &str = "ALTPairingFile.dat";
+ 
+ pub struct Application {
+     pub bundle: Bundle,
+-    //pub temp_path: PathBuf,
++    pub(crate) temporary: Option<tempfile::TempDir>,
+ }
+ 
+ impl Application {
+@@ -34,28 +36,16 @@ impl Application {
+         }
+ 
+         let mut bundle_path = path.clone();
+-        //let mut temp_path = PathBuf::new();
+-
++        let mut temporary = None;
+         if path.is_file() {
+-            let temp_dir = std::env::temp_dir();
+-            let temp_path = temp_dir.join(
+-                path.file_name()
+-                    .ok_or_report()?
+-                    .to_string_lossy()
+-                    .to_string()
+-                    + "_extracted",
+-            );
+-            if temp_path.exists() {
+-                std::fs::remove_dir_all(&temp_path)
+-                    .context("Failed to remove existing temporary directory")?;
+-            }
+-            std::fs::create_dir_all(&temp_path).context("Failed to create temporary directory")?;
+-
++            let directory = tempfile::Builder::new().prefix("sideos-").suffix("_extracted").tempdir()
++                .context("Failed to create private IPA staging directory")?;
++            let temp_path = directory.path().to_path_buf();
++            temporary = Some(directory);
+             let file = File::open(&path).context("Failed to open application archive")?;
+             let mut archive =
+                 ZipArchive::new(file).context("Failed to open application archive")?;
+-            archive
+-                .extract(&temp_path)
++            safe_extract::extract(&mut archive, &temp_path)
+                 .context("Failed to extract application archive")?;
+ 
+             let payload_folder = temp_path.join("Payload");
+@@ -86,7 +76,7 @@ impl Application {
+         let bundle = Bundle::new(bundle_path)?;
+ 
+         Ok(Application {
+-            bundle, /*temp_path*/
++            bundle, temporary
+         })
+     }
+ 
+@@ -453,6 +443,7 @@ mod tests {
+             write_info(&widget_dir, &[("CFBundleIdentifier", "com.example.app.widget")]);
+ 
+             let app = Application {
++                temporary: None,
+                 bundle: Bundle::new(app_dir).unwrap(),
+             };
+             TestApp { root, app }
+@@ -486,6 +477,7 @@ mod tests {
+         let dir = TempDir::new();
+         let app_dir = write_app_with_both_extension_kinds(&dir.0);
+         let mut app = Application {
++            temporary: None,
+             bundle: Bundle::new(app_dir.clone()).unwrap(),
+         };
+         app.update_bundle_id("com.zarz.mornye", "com.zarz.mornye.TEAMID1234")
+diff --git a/rust-core/vendor/isideload/src/sideload/cert_identity.rs b/rust-core/vendor/isideload/src/sideload/cert_identity.rs
+index 09ffb99..efaa4b8 100644
+--- a/rust-core/vendor/isideload/src/sideload/cert_identity.rs
++++ b/rust-core/vendor/isideload/src/sideload/cert_identity.rs
+@@ -104,8 +104,8 @@ impl CertificateIdentity {
+     pub fn get_serial_number(&self) -> String {
+         let serial: String = self
+             .certificate
+-            .tbs_certificate
+-            .serial_number
++            .tbs_certificate()
++            .serial_number()
+             .as_bytes()
+             .encode_hex::<String>();
+         serial.trim_start_matches('0').to_string().to_uppercase()
+@@ -222,17 +222,17 @@ impl CertificateIdentity {
+         &self,
+         certificate_candidates: &[Certificate],
+     ) -> Result<Vec<Certificate>, Report> {
+-        if self.certificate.tbs_certificate.subject == self.certificate.tbs_certificate.issuer {
++        if self.certificate.tbs_certificate().subject() == self.certificate.tbs_certificate().issuer() {
+             return Ok(Vec::new());
+         }
+ 
+-        let mut issuer = self.certificate.tbs_certificate.issuer.clone();
++        let mut issuer = self.certificate.tbs_certificate().issuer().clone();
+         let mut certificate_chain = Vec::new();
+ 
+         loop {
+             let certificate = certificate_candidates
+                 .iter()
+-                .find(|candidate| candidate.tbs_certificate.subject == issuer)
++                .find(|candidate| candidate.tbs_certificate().subject() == &issuer)
+                 .ok_or_else(|| {
+                     report!(
+                         "missing issuer certificate {issuer} for the code-signing certificate chain"
+@@ -244,8 +244,8 @@ impl CertificateIdentity {
+                 bail!("certificate chain contains a cycle");
+             }
+ 
+-            let is_root = certificate.tbs_certificate.subject == certificate.tbs_certificate.issuer;
+-            issuer = certificate.tbs_certificate.issuer.clone();
++            let is_root = certificate.tbs_certificate().subject() == certificate.tbs_certificate().issuer();
++            issuer = certificate.tbs_certificate().issuer().clone();
+             certificate_chain.push(certificate);
+ 
+             if is_root {
+@@ -268,7 +268,7 @@ impl CertificateIdentity {
+             return Ok(RsaPrivateKey::from_pkcs8_der(&priv_key)?);
+         }
+ 
+-        let mut rng = rand::thread_rng();
++        let mut rng = rand10::rng();
+         let private_key = RsaPrivateKey::new(&mut rng, 2048)?;
+         storage.store_data(
+             &format!("{}/key", email_hash),
+@@ -301,8 +301,8 @@ impl CertificateIdentity {
+                 Certificate::from_der(cert.cert_content.as_ref().ok_or_report()?.as_ref())?;
+ 
+             let apple_public_key_der = x509_cert
+-                .tbs_certificate
+-                .subject_public_key_info
++                .tbs_certificate()
++                .subject_public_key_info()
+                 .subject_public_key
+                 .as_bytes()
+                 .ok_or_report()?
+diff --git a/rust-core/vendor/isideload/src/sideload/sideloader.rs b/rust-core/vendor/isideload/src/sideload/sideloader.rs
+index f2d501a..43e6201 100644
+--- a/rust-core/vendor/isideload/src/sideload/sideloader.rs
++++ b/rust-core/vendor/isideload/src/sideload/sideloader.rs
+@@ -311,7 +311,11 @@ impl Sideloader {
+ 
+         info!("App signed!");
+ 
+-        Ok((app.bundle.bundle_dir.clone(), special))
++        // Keep only a successfully signed staging directory for the native
++        // installer; failed signing drops TempDir and removes partial files.
++        let path = app.bundle.bundle_dir.clone();
++        if let Some(directory) = app.temporary.take() { let _ = directory.keep(); }
++        Ok((path, special))
+     }
+ 
+     #[cfg(feature = "install")]
+diff --git a/rust-core/vendor/isideload/src/sideload/sign.rs b/rust-core/vendor/isideload/src/sideload/sign.rs
+index 0e4440e..18bbde7 100644
+--- a/rust-core/vendor/isideload/src/sideload/sign.rs
++++ b/rust-core/vendor/isideload/src/sideload/sign.rs
+@@ -168,6 +168,7 @@ mod tests {
+         let dir = TempDir::new();
+         let app_dir = write_app_with_both_extension_kinds(&dir.0);
+         let mut app = Application {
++            temporary: None,
+             bundle: Bundle::new(app_dir).unwrap(),
+         };
+         app.update_bundle_id("com.zarz.mornye", "com.zarz.mornye.TEAMID1234")

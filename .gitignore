@@ -1,0 +1,43 @@
+.DS_Store
+__pycache__/
+*.pyc
+engine/
+preview-build/
+preview-derived/
+preview-results.xcresult/
+preview-screenshots/
+Generated-*.plist
+artifacts/
+*.log
+**/target/
+
+embedded/tahoe/preview/*.xcodeproj/
+
+
+# Native PR validation artifacts
+native-derived/
+native-results/
+/tools/web-tests/node_modules/
+/browser-app/build/
+/browser-app/*.xcodeproj/
+/browser-app/Generated-*.plist
+
+# Owner resource-update signing keys stay outside version control.
+.sideos-update-keys/
+adapter-signing-private.pem
+
+# Personal signing, provisioning and pairing material must never ship.
+*.p12
+*.pfx
+*.mobileprovision
+*.provisionprofile
+*.key
+*.p8
+.env
+.env.*
+!*.example
+pairing_records/
+PairingFiles/
+
+# Personal billing/usage exports stay local.
+docs/security-evidence/*account*.json

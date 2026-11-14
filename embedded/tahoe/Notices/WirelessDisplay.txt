@@ -1,0 +1,11 @@
+SideOS Wireless Display architecture reference
+
+Henge Link design in https://github.com/stride-praline-2f-ai/henge-
+Pinned Henge base: be027b492bac818a3bb0c76fc8bbdd7aee42cbd2
+Patch manifest's Henge Link source: 031593d6be25ac6ca254fb660a80fd2ae9e933a1
+
+Informed the local TLS-PSK pairing, bounded hardware-video streaming and
+decode-consumption acknowledgement approach. SideOS implements a separate
+display-only protocol and UIKit window projection; it does not embed Henge's
+VM, Metal display-port or HID backend. Existing project/component licences
+remain as documented in LICENSING.md.

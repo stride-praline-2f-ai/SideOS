@@ -1,0 +1,4 @@
+LiveContainer Dock/Application icon artwork is copied with identical decoded pixels from the pinned official LiveContainer/LiveContainer repository, revision 9d6ea09b05afa2c8fc537c372795a294db631311.
+Sources: Resources/Assets.xcassets/AppIcon.appiconset/AppIcon1024.png and AppIconDark1024.png.
+Nonessential EXIF/XMP metadata was removed without changing decoded pixels.
+The upstream AGPL-3.0 licence is retained in LICENSES/LiveContainer-AGPL-3.0.txt and in packaged runtime notices. This is the LiveContainer application icon, separate from the custom SideOS host icon.

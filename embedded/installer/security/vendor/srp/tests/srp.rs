@@ -1,0 +1,172 @@
+use proptest::prelude::*;
+use sha2::Sha256;
+use srp::{Client, Salt, Server, groups::G2048};
+
+type EphemeralSecret = [u8; 64];
+
+fn auth_test_rfc5054(
+    true_pwd: &[u8],
+    auth_pwd: &[u8],
+    a: &EphemeralSecret,
+    b: &EphemeralSecret,
+    salt: &Salt,
+) {
+    let username = b"alice";
+
+    // Client instance creation
+    let client = Client::<G2048, Sha256>::new();
+
+    // Begin Registration
+    let verifier = client.compute_verifier(username, true_pwd, salt);
+
+    // Client sends username and verifier and salt to the Server for storage
+    // Registration Ends
+
+    // Begin Authentication
+    // User sends username
+
+    // Server instance creation
+    let server = Server::<G2048, Sha256>::new();
+
+    // Server retrieves verifier, salt and computes a public B value
+    let b_pub = server.compute_public_ephemeral(b, &verifier);
+
+    // Server sends salt and b_pub to client
+
+    // Client computes the public A value and the clientVerifier containing the key, m1, and m2
+    let client_verifier = client
+        .process_reply(a, username, auth_pwd, salt, &b_pub)
+        .unwrap();
+    let a_pub = client.compute_public_ephemeral(a);
+    let client_proof = client_verifier.proof();
+
+    // Client sends a_pub and client_proof to server (M1)
+
+    // Server processes verification data
+    let server_verifier = server
+        .process_reply(username, salt, b, &verifier, &a_pub)
+        .unwrap();
+    println!("Client verification on server");
+    let server_session_key = server_verifier.verify_client(client_proof).unwrap();
+    let server_proof = server_verifier.proof();
+    let server_shared_secret = server_verifier.key();
+
+    // Server sends server_proof to server (M2)
+
+    // Client verifies server
+    println!("Server verification on client");
+    let client_session_key = client_verifier.verify_server(server_proof).unwrap();
+    let client_shared_secret = client_verifier.key();
+
+    // our shared secrets almost must equal but just an extra check
+    assert_eq!(
+        server_shared_secret, client_shared_secret,
+        "server and client shared secrets are not equal"
+    );
+
+    // our session keys almost must equal but just an extra check
+    assert_eq!(
+        server_session_key, client_session_key,
+        "server and client session keys are not equal"
+    );
+}
+
+#[allow(deprecated)]
+fn auth_test_legacy(
+    true_pwd: &[u8],
+    auth_pwd: &[u8],
+    a: &EphemeralSecret,
+    b: &EphemeralSecret,
+    salt: &Salt,
+) {
+    let username = b"alice";
+
+    // Client instance creation
+    let client = Client::<G2048, Sha256>::new();
+
+    // Begin Registration
+    let verifier = client.compute_verifier(username, true_pwd, salt);
+
+    // Client sends username and verifier and salt to the Server for storage
+    // Registration Ends
+
+    // Begin Authentication
+    // User sends username
+
+    // Server instance creation
+    let server = Server::<G2048, Sha256>::new();
+
+    // Server retrieves verifier, salt and computes a public B value
+    let b_pub = server.compute_public_ephemeral(b, &verifier);
+
+    // Server sends salt and b_pub to client
+
+    // Client computes the public A value and the clientVerifier containing the key, m1, and m2
+    let client_verifier = client
+        .process_reply_legacy(a, username, auth_pwd, salt, &b_pub)
+        .unwrap();
+    let a_pub = client.compute_public_ephemeral(a);
+    let client_proof = client_verifier.proof();
+
+    // Client sends a_pub and client_proof to server (M1)
+
+    // Server processes verification data
+    let server_verifier = server.process_reply_legacy(b, &verifier, &a_pub).unwrap();
+    println!("Client verification on server");
+    server_verifier.verify_client(client_proof).unwrap();
+    let server_proof = server_verifier.proof();
+    let server_key = server_verifier.key();
+
+    // Server sends server_proof to client (M2)
+
+    // Client verifies server
+    println!("Server verification on client");
+    client_verifier.verify_server(server_proof).unwrap();
+    let client_key = client_verifier.key();
+
+    // our keys also must be equal, but just an extra check to be sure
+    assert_eq!(
+        server_key, client_key,
+        "server and client keys are not equal"
+    );
+}
+
+proptest! {
+    #[test]
+    fn rfc5054_good_password(
+        a in any::<EphemeralSecret>(),
+        b in any::<EphemeralSecret>(),
+        salt in any::<Salt>()
+    ) {
+        auth_test_rfc5054(b"password", b"password", &a, &b, &salt);
+    }
+
+    #[test]
+    #[should_panic]
+    fn rfc5054_bad_password(
+        a in any::<EphemeralSecret>(),
+        b in any::<EphemeralSecret>(),
+        salt in any::<Salt>()
+    ) {
+        auth_test_rfc5054(b"password", b"paSsword", &a, &b, &salt);
+    }
+
+    #[test]
+    fn legacy_good_password(
+        a in any::<EphemeralSecret>(),
+        b in any::<EphemeralSecret>(),
+        salt in any::<Salt>()
+    ) {
+        auth_test_legacy(b"password", b"password", &a, &b, &salt);
+    }
+
+    #[test]
+    #[should_panic]
+    fn legacy_bad_password(
+        a in any::<EphemeralSecret>(),
+        b in any::<EphemeralSecret>(),
+        salt in any::<Salt>()
+    ) {
+        auth_test_legacy(b"password", b"paSsword", &a, &b, &salt);
+    }
+}

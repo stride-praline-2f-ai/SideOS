@@ -1,0 +1,104 @@
+[
+  {
+    "repo": "alexwidua/genie",
+    "branch": "main",
+    "license": {
+      "key": "mit",
+      "name": "MIT License",
+      "spdx_id": "MIT",
+      "url": "https://api.github.com/licenses/mit",
+      "node_id": "MDc6TGljZW5zZTEz"
+    },
+    "sha": "83c33c690b6fc30ccdc484f83872dd21cf3abee7"
+  },
+  {
+    "repo": "SekiroKenjii/macos-genie",
+    "branch": "main",
+    "license": {
+      "key": "gpl-2.0",
+      "name": "GNU General Public License v2.0",
+      "spdx_id": "GPL-2.0",
+      "url": "https://api.github.com/licenses/gpl-2.0",
+      "node_id": "MDc6TGljZW5zZTg="
+    },
+    "sha": "375f785b74b7903e48923e88b250e10cd813fd13"
+  },
+  {
+    "repo": "baikaihao/EchoDock",
+    "branch": "main",
+    "license": {
+      "key": "agpl-3.0",
+      "name": "GNU Affero General Public License v3.0",
+      "spdx_id": "AGPL-3.0",
+      "url": "https://api.github.com/licenses/agpl-3.0",
+      "node_id": "MDc6TGljZW5zZTE="
+    },
+    "sha": "53cd5bc872ed5d514fd4391940a6011b34d7ba11"
+  },
+  {
+    "repo": "Kaww/magnification-effect",
+    "branch": "main",
+    "license": null,
+    "sha": "92428a25a2c5ff190bda6c7fe9ff5aecc133b72b"
+  },
+  {
+    "repo": "souph1s/dock-macos",
+    "branch": "main",
+    "license": null,
+    "sha": "82ab03b56a2654e81d2a695cc1b1fab9d6d61385"
+  },
+  {
+    "repo": "LikhithSP/MacOS-Web-Simulator",
+    "branch": "main",
+    "license": {
+      "key": "mit",
+      "name": "MIT License",
+      "spdx_id": "MIT",
+      "url": "https://api.github.com/licenses/mit",
+      "node_id": "MDc6TGljZW5zZTEz"
+    },
+    "sha": "56393c9b0a853d5711bbef428c9b784d8105b14c"
+  },
+  {
+    "repo": "juanlara-aidev/macos-26-design",
+    "branch": "main",
+    "license": {
+      "key": "other",
+      "name": "Other",
+      "spdx_id": "NOASSERTION",
+      "url": null,
+      "node_id": "MDc6TGljZW5zZTA="
+    },
+    "sha": "da9d3ec59ff74d6718e6bf50f2451284bf17aabf"
+  },
+  {
+    "repo": "YordiLorenzo/liquid-glass-skills",
+    "branch": "main",
+    "license": {
+      "key": "mit",
+      "name": "MIT License",
+      "spdx_id": "MIT",
+      "url": "https://api.github.com/licenses/mit",
+      "node_id": "MDc6TGljZW5zZTEz"
+    },
+    "sha": "a6bac94c5a7a65ac42207452e3e63bb4eb7518e8"
+  },
+  {
+    "repo": "GetStream/awesome-liquid-glass",
+    "branch": "main",
+    "license": null,
+    "sha": "a797c7a1c78373005961ad73e05d378f4dcb4b34"
+  },
+  {
+    "repo": "usagimaru/GenieWarpMesh",
+    "branch": "main",
+    "license": {
+      "key": "mit",
+      "name": "MIT License",
+      "spdx_id": "MIT",
+      "url": "https://api.github.com/licenses/mit",
+      "node_id": "MDc6TGljZW5zZTEz"
+    },
+    "sha": "5a6f2a4460dde2c487b0ac4138aa479732ee8d90"
+  }
+]

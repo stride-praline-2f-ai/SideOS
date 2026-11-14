@@ -1,0 +1,13 @@
+macos-components — tamnguyenvan
+https://github.com/tamnguyenvan/macos-components
+Inspected revision: e82dbfa3702a156e4b9947337dea3d496a162905
+
+Native adaptations cover button sizes and variants, pressed/disabled styling,
+switch and checkbox geometry, traffic-light colours/hover/focus states,
+48-point unified title bars, 16-point window corners, sidebar rows, menu
+spacing, fields, slider/radio/segmented geometry, progress, dialogs, settings
+groups and light/dark surface measurements.
+
+No public reuse licence has been verified for this reference. Attribution does
+not assign an MIT licence or grant redistribution rights to the upstream
+project. Retain the original authors' attribution and applicable terms.

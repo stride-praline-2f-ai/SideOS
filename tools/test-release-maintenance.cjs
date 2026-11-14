@@ -1,0 +1,11 @@
+'use strict';
+const assert = require('node:assert/strict');
+const {validateBranches} = require('./release-maintenance.cjs');
+const expected = {main: 'a'.repeat(40), 'release/maintenance': 'b'.repeat(40)};
+const running = 'c'.repeat(40);
+const branches = [{name: 'main', commit: {sha: expected.main}}, {name: 'release/maintenance', commit: {sha: running}}];
+validateBranches(branches, expected, running);
+assert.throws(() => validateBranches([{...branches[0], commit: {sha: 'd'.repeat(40)}}, branches[1]], expected, running));
+assert.throws(() => validateBranches([...branches, {name: 'concurrent-work', commit: {sha: 'e'.repeat(40)}}], expected, running));
+assert.throws(() => validateBranches(branches.slice(0, 1), expected, running));
+console.log('Source replacement refuses changed, missing and unrecognized branches before rewriting a ref.');

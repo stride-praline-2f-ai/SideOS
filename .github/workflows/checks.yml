@@ -1,0 +1,136 @@
+name: SideOS3 Checks
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'embedded/**'
+      - 'browser-app/**'
+      - 'tools/**'
+      - 'build-rust.sh'
+      - 'Engine.lock.json'
+      - '.github/workflows/**'
+  pull_request:
+    paths:
+      - 'embedded/**'
+      - 'browser-app/**'
+      - 'tools/**'
+      - 'build-rust.sh'
+      - 'Engine.lock.json'
+      - '.github/workflows/**'
+  workflow_call:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: sideos-checks-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Check release safety and current RustSec advisories
+        run: |
+          python3 tools/test-release-safety.py
+          git clone --depth 1 https://github.com/RustSec/advisory-db.git "$RUNNER_TEMP/rustsec"
+          python3 tools/installer-security.py --database "$RUNNER_TEMP/rustsec"
+      - name: Check real installer signatures and hostile IPA fixtures on Linux
+        run: |
+          git init -q "$RUNNER_TEMP/installer-engine"
+          git init -q "$RUNNER_TEMP/installer-upstream"
+          git -C "$RUNNER_TEMP/installer-upstream" fetch --depth 1 https://github.com/FrizzleM/SideInstaller.git 50b2a0dea22d43659e2630e01daa9097145874cb
+          git -C "$RUNNER_TEMP/installer-upstream" checkout --detach FETCH_HEAD
+          python3 -m pip install --break-system-packages pyyaml
+          python3 tools/update-installer.py "$RUNNER_TEMP/installer-engine" "$RUNNER_TEMP/installer-upstream"
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          bash tools/test-installer-crypto.sh "$RUNNER_TEMP/installer-engine"
+  reuse:
+    runs-on: ubuntu-latest
+    outputs:
+      validated: ${{ steps.exact.outputs.validated }}
+    steps:
+      - name: Reuse successful device validation for this exact main commit
+        id: exact
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            core.setOutput('validated', 'false');
+            if (context.eventName !== 'push' || context.ref !== 'refs/heads/main') return;
+            try {
+              const repository = `${context.repo.owner}/${context.repo.repo}`;
+              let match;
+              for (const workflow_id of ['private-build.yml', 'native-source-check.yml']) {
+                const {data} = await github.rest.actions.listWorkflowRuns({
+                  ...context.repo, workflow_id, head_sha: context.sha, status: 'success', per_page: 20
+                });
+                match = data.workflow_runs.find(run =>
+                  run.head_sha === context.sha && run.conclusion === 'success' &&
+                  run.head_repository?.full_name === repository &&
+                  ((run.event === 'push' && ((workflow_id === 'private-build.yml' && run.head_branch === 'ipa/device') ||
+                    (workflow_id === 'native-source-check.yml' && run.head_branch === 'validation/native'))) || run.event === 'workflow_dispatch'));
+                if (match) break;
+              }
+              if (match) { core.setOutput('validated', 'true'); core.info(`Reusing successful native validation run ${match.id} for ${context.sha}`); }
+            } catch (error) { core.info('No reusable validation found; running the full Linux checks.'); }
+  layout:
+    needs: reuse
+    if: needs.reuse.outputs.validated != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - name: Check real browser layout and viewport behavior
+        run: |
+          node tools/test-device-reuse.cjs
+          node tools/test-chatgpt-layout.cjs
+  validate:
+    needs: reuse
+    if: needs.reuse.outputs.validated != 'true'
+    runs-on: ubuntu-latest
+    container: swift:6.2-bookworm
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Check core behaviour
+        run: bash tools/test-core.sh
+      - name: Check workflow and device-only build policy
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends python3 python3-yaml
+          python3 tools/test-build-rust.py
+          python3 tools/test-workflow-policy.py
+          python3 tools/test-native-sdk-selection.py
+          python3 tools/test-installer-update.py
+          python3 tools/test-device-recipes.py
+          python3 tools/test-host-warnings.py
+          python3 tools/test-adapter-signing.py
+          python3 tools/test-refresh-guard.py
+          python3 tools/test-desktop-package.py
+          python3 tools/test-browser-package.py
+          python3 tools/test-actions-cost.py
+          python3 tools/test-browser-signing.py
+          python3 tools/audit-release.py
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: tools/web-tests/package-lock.json
+      - name: Check ChatGPT page adapter
+        run: |
+          npm ci --prefix tools/web-tests --ignore-scripts --no-audit --no-fund
+          NODE_PATH="$GITHUB_WORKSPACE/tools/web-tests/node_modules" node tools/test-chatgpt-workspace.cjs
+      - name: Check release publisher safeguards
+        run: |
+          node tools/test-release-publisher.cjs
+          node tools/test-release-maintenance.cjs
