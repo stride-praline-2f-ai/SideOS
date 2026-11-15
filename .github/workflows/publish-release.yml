@@ -23,6 +23,8 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      release_id: ${{ steps.release.outputs.release_id }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -30,8 +32,37 @@ jobs:
       - name: Check release publisher safeguards
         run: node tools/test-release-publisher.cjs
       - name: Attach the verified IPA and publish an experimental release
+        id: release
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           script: |
             const publish = require('./tools/publish-release.cjs');
             await publish({github, context, core});
+  retire:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: node tools/test-release-maintenance.cjs
+      - name: Retire superseded downloads after replacement verification
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          REPLACEMENT_RELEASE_ID: ${{ needs.publish.outputs.release_id }}
+        with:
+          script: |
+            const fs = require('node:fs');
+            const release = JSON.parse(fs.readFileSync('.github/release-request.json', 'utf8'));
+            await require('./tools/release-maintenance.cjs')({github, context, core, request: {
+              operation: 'retire-superseded-builds',
+              replacement_release_id: Number(process.env.REPLACEMENT_RELEASE_ID),
+              keep_run_id: release.run_id,
+              source: release.source_sha,
+              ipa_sha256: release.ipa_sha256,
+              retire_release_ids: release.retire_release_ids || []
+            }});

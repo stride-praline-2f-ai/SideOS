@@ -39,6 +39,8 @@ module.exports = async function maintain({github, context, core, request: suppli
     ensure(assets.some(asset => asset.name.endsWith('-unsigned.ipa') && asset.digest === `sha256:${request.ipa_sha256}`), 'Replacement IPA checksum is not verified');
     const keep = (await github.rest.actions.getWorkflowRun({...api, run_id: request.keep_run_id})).data;
     ensure(keep.conclusion === 'success' && keep.head_sha === request.source && keep.path === '.github/workflows/private-build.yml', 'Replacement device workflow must succeed');
+    const publication = (await github.rest.actions.getWorkflowRun({...api, run_id: context.runId})).data;
+    ensure(Number.isFinite(Date.parse(publication.created_at)) && Number.isFinite(Date.parse(keep.created_at)), 'Missing publication/build timestamp');
     const retiredReleases = [];
     for (const id of request.retire_release_ids || []) {
       ensure(Number.isSafeInteger(id) && id !== replacement.id, 'Invalid superseded release');
@@ -57,9 +59,14 @@ module.exports = async function maintain({github, context, core, request: suppli
     }
     const runs = await github.paginate(github.rest.actions.listWorkflowRunsForRepo, {...api, status: 'completed', per_page: 100});
     for (const run of runs) {
-      if (run.id === request.keep_run_id || run.head_sha === request.source || run.head_sha === context.sha || run.created_at >= keep.created_at) continue;
+      if (run.id === request.keep_run_id || run.head_sha === request.source || run.head_sha === context.sha || run.created_at >= publication.created_at) continue;
       if (run.head_repository?.full_name !== `${api.owner}/${api.repo}`) continue;
       await github.rest.actions.deleteWorkflowRun({...api, run_id: run.id});
+    }
+    const caches = (await github.request('GET /repos/{owner}/{repo}/actions/caches', {...api, per_page: 100})).data.actions_caches;
+    for (const cache of caches || []) {
+      if (!/^(sideos3-|tahoe-)/.test(cache.key) || cache.created_at >= keep.created_at) continue;
+      await github.request('DELETE /repos/{owner}/{repo}/actions/caches/{cache_id}', {...api, cache_id: cache.id});
     }
     core.info(`Replacement verified. Removed ${removed} superseded IPA artifacts and retired the withdrawn release.`);
     return;

@@ -120,6 +120,7 @@ with zipfile.ZipFile(sys.argv[1]) as archive:
     // The public release is the final mutation, after every asset is verified.
     release = (await github.rest.repos.updateRelease({...api, release_id: release.id, body: notes, draft: false, prerelease: true, make_latest: 'false'})).data;
     core.setOutput('release_url', release.html_url);
+    core.setOutput('release_id', String(release.id));
     await core.summary.addHeading('Published experimental SideOS release').addLink('Release and IPA', release.html_url)
       .addRaw(`\n\nSource: ${request.source_sha}\n\nIPA SHA-256: ${request.ipa_sha256}\n`).write();
     core.info(`Published ${tag}: ${release.html_url}`);

@@ -1,3 +1,11 @@
 {
-  "status": "awaiting-verified-replacement"
+  "build": 15,
+  "run_id": 43656464650,
+  "artifact_id": 14139205427,
+  "source_sha": "28ead201724b16af8d460cca74d0a2154b72ee4c",
+  "archive_sha256": "62158cd6a0b39b071daa6847ec9ffc8df2f1e005cab77961821822d917680d54",
+  "ipa_sha256": "280c480602f12e19b10889d6ae75cd5bb26bb4577ffeb061b201a3c730f7e66b",
+  "retire_release_ids": [
+    445641063
+  ]
 }
