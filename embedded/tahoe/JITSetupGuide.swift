@@ -86,7 +86,7 @@ struct TahoeJITSetupGuide: View {
     private func help(_ title: String, _ detail: String) -> some View {
         VStack(alignment: .leading, spacing: 4) { Text(title).font(.headline); Text(detail).font(.callout).foregroundStyle(.secondary) }
     }
-    private func step<Content: View>(_ number: Int, _ title: String, _ summary: String, @ViewBuilder content: () -> Content) -> some View {
+    private func step<Content: View>(_ number: Int, _ title: String, _ summary: String, @ViewBuilder content: @escaping () -> Content) -> some View {
         DisclosureGroup(isExpanded: Binding(get: { expanded == number }, set: { expanded = $0 ? number : 0 })) {
             VStack(alignment: .leading, spacing: 12) {
                 content()
