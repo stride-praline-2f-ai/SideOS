@@ -44,7 +44,9 @@ module.exports = async function maintain({github, context, core, request: suppli
     const retiredReleases = [];
     for (const id of request.retire_release_ids || []) {
       ensure(Number.isSafeInteger(id) && id !== replacement.id, 'Invalid superseded release');
-      const old = (await github.rest.repos.getRelease({...api, release_id: id})).data;
+      let old;
+      try { old = (await github.rest.repos.getRelease({...api, release_id: id})).data; }
+      catch (error) { if (error.status === 404) continue; throw error; }
       ensure(old.draft && old.target_commitish !== request.source, 'Only previously withdrawn superseded releases may be retired');
       retiredReleases.push(id);
     }

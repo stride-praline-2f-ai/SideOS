@@ -17,7 +17,10 @@ async function retirementFixture(change = {}) {
   const before = '2026-11-14T20:00:00Z', buildTime = '2026-11-15T00:00:00Z', publishTime = '2026-11-15T01:00:00Z', after = '2026-11-15T02:00:00Z';
   const keep = {id: 200, conclusion: 'success', head_sha: source, path: '.github/workflows/private-build.yml', created_at: buildTime};
   const repos = {
-    async getRelease({release_id}) { return {data: release_id === 2 ? {id: 2, draft: false, target_commitish: source, ...change.release} : {id: 1, draft: true, target_commitish: 'b'.repeat(40), ...change.oldRelease}}; },
+    async getRelease({release_id}) {
+      if (release_id === 1 && change.oldReleaseMissing) throw Object.assign(new Error('Already retired'), {status: 404});
+      return {data: release_id === 2 ? {id: 2, draft: false, target_commitish: source, ...change.release} : {id: 1, draft: true, target_commitish: 'b'.repeat(40), ...change.oldRelease}};
+    },
     listReleaseAssets() {},
     async deleteRelease({release_id}) { mutations.push(['release', release_id]); }
   };
@@ -53,6 +56,9 @@ async function retirementFixture(change = {}) {
   const successful = await retirementFixture();
   assert.equal(successful.error, undefined);
   assert.deepEqual(successful.mutations, [['artifact', 10], ['release', 1], ['run', 100], ['cache', 11]]);
+  const repeated = await retirementFixture({oldReleaseMissing: true});
+  assert.equal(repeated.error, undefined);
+  assert.deepEqual(repeated.mutations, [['artifact', 10], ['run', 100], ['cache', 11]]);
   for (const change of [{release: {draft: true}}, {asset: {digest: 'sha256:wrong'}}, {build: {conclusion: 'failure'}}, {oldRelease: {draft: false}}]) {
     const refused = await retirementFixture(change);
     assert.ok(refused.error); assert.deepEqual(refused.mutations, []);
