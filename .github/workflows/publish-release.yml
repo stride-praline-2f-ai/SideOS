@@ -9,6 +9,8 @@ on:
       - '.github/release-notes.md'
       - '.github/workflows/publish-release.yml'
       - 'tools/publish-release.cjs'
+      - 'tools/release-maintenance.cjs'
+      - 'tools/test-release-maintenance.cjs'
   workflow_dispatch:
 
 permissions:
